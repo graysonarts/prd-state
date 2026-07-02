@@ -1,6 +1,6 @@
 //! Resume-aware status summary, computed from state (never asserted by the agent).
 
-use crate::state::{Phase, ReqStatus, ReqType, State, SubgoalStatus};
+use crate::state::{Phase, State, SubgoalStatus};
 use serde::Serialize;
 use std::path::Path;
 
@@ -30,11 +30,7 @@ pub fn summary(state: &State, artifact_root: &Path) -> Summary {
             id: sg.id.clone(),
             description: sg.description.clone(),
         });
-    let pending_milestones = state
-        .requirements
-        .iter()
-        .filter(|r| r.req_type == ReqType::Milestone && r.status == Some(ReqStatus::Active))
-        .count();
+    let pending_milestones = state.requirements.pending_milestones();
     Summary {
         iteration: state.iteration,
         phase: state.current_phase,
@@ -44,7 +40,7 @@ pub fn summary(state: &State, artifact_root: &Path) -> Summary {
     }
 }
 
-/// The prd_work_loop resume table.
+/// The `prd_work_loop` resume table.
 fn resume_phase(state: &State, artifact_root: &Path) -> Phase {
     match state.current_phase {
         None => Phase::Observe,
@@ -72,14 +68,10 @@ fn resume_phase(state: &State, artifact_root: &Path) -> Phase {
 
 pub fn render(s: &Summary) -> String {
     let phase = s
-        .phase
-        .map(|p| p.to_string())
-        .unwrap_or_else(|| "none (between iterations)".into());
+        .phase.map_or_else(|| "none (between iterations)".into(), |p| p.to_string());
     let subgoal = s
         .next_subgoal
-        .as_ref()
-        .map(|sg| format!("{} — {}", sg.id, sg.description))
-        .unwrap_or_else(|| "none (all complete)".into());
+        .as_ref().map_or_else(|| "none (all complete)".into(), |sg| format!("{} — {}", sg.id, sg.description));
     format!(
         "iteration: {}\nphase: {}\nnext subgoal: {}\npending milestones: {}\nresume: {}",
         s.iteration, phase, subgoal, s.pending_milestones, s.resume
@@ -89,7 +81,7 @@ pub fn render(s: &Summary) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::{ChecklistItem, CurrentAction, Requirement, Subgoal, Tier};
+    use crate::state::{ChecklistItem, CurrentAction, ReqType, Subgoal, Tier};
     use std::fs;
     use tempfile::TempDir;
 
@@ -112,18 +104,9 @@ mod tests {
             milestones: vec!["ISC-B1".into()],
             status: SubgoalStatus::Pending,
         });
-        s.requirements.push(Requirement {
-            id: "ISC-A1".into(),
-            req_type: ReqType::Milestone,
-            status: Some(ReqStatus::Satisfied),
-            text: "done".into(),
-        });
-        s.requirements.push(Requirement {
-            id: "ISC-B1".into(),
-            req_type: ReqType::Milestone,
-            status: Some(ReqStatus::Active),
-            text: "todo".into(),
-        });
+        s.requirements.add("ISC-A1", ReqType::Milestone, "done").unwrap();
+        s.requirements.mark_satisfied("ISC-A1").unwrap();
+        s.requirements.add("ISC-B1", ReqType::Milestone, "todo").unwrap();
         s
     }
 

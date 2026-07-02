@@ -2,16 +2,16 @@
 
 use crate::state::{self, ChecklistItem, CurrentAction, ReqType, SubgoalStatus};
 use anyhow::{bail, Result};
+use std::fmt::Write as _;
 use std::path::Path;
 
-/// Mark the subgoal in_progress, set current_action from it, derive the
+/// Mark the subgoal `in_progress`, set `current_action` from it, derive the
 /// pre-flight (every registered invariant + exactly the subgoal's milestones),
 /// and return the printed checklist.
 pub fn run(dir: &Path, sg_id: &str) -> Result<String> {
     let mut st = state::load(dir)?;
-    let sg = match st.subgoals.iter_mut().find(|sg| sg.id == sg_id) {
-        Some(sg) => sg,
-        None => bail!("subgoal {sg_id} not found"),
+    let Some(sg) = st.subgoals.iter_mut().find(|sg| sg.id == sg_id) else {
+        bail!("subgoal {sg_id} not found");
     };
     if sg.status == SubgoalStatus::Complete {
         bail!("subgoal {sg_id} is already complete");
@@ -27,12 +27,11 @@ pub fn run(dir: &Path, sg_id: &str) -> Result<String> {
 
     let mut checklist: Vec<ChecklistItem> = st
         .requirements
-        .iter()
-        .filter(|r| r.req_type == ReqType::Invariant)
+        .invariants()
         .map(|r| ChecklistItem { id: r.id.clone(), req_type: ReqType::Invariant })
         .collect();
     for m in &milestones {
-        if !st.requirements.iter().any(|r| r.id == *m) {
+        if st.requirements.find(m).is_none() {
             bail!("milestone {m} not in registry; run `sync` or `req add` first");
         }
         checklist.push(ChecklistItem { id: m.clone(), req_type: ReqType::Milestone });
@@ -41,8 +40,8 @@ pub fn run(dir: &Path, sg_id: &str) -> Result<String> {
     let mut out = format!("PRE-FLIGHT for {}", action.artifacts.join(", "));
     let width = checklist.iter().map(|c| c.id.len()).max().unwrap_or(0);
     for item in &checklist {
-        let text = &st.requirements.iter().find(|r| r.id == item.id).unwrap().text;
-        out.push_str(&format!("\n  {:width$}  {}", item.id, text));
+        let text = &st.requirements.find(&item.id).unwrap().text;
+        let _ = write!(out, "\n  {:width$}  {}", item.id, text);
     }
 
     st.current_action = Some(action);
@@ -54,27 +53,17 @@ pub fn run(dir: &Path, sg_id: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::{Requirement, ReqStatus, State, Subgoal, Tier};
+    use crate::state::{State, Subgoal, Tier};
     use tempfile::TempDir;
-
-    fn req(id: &str, req_type: ReqType) -> Requirement {
-        Requirement {
-            id: id.into(),
-            req_type,
-            status: matches!(req_type, ReqType::Milestone).then_some(ReqStatus::Active),
-            text: format!("text for {id}"),
-        }
-    }
 
     fn dir_with_subgoal() -> TempDir {
         let dir = TempDir::new().unwrap();
         let mut st = State::new("PRD-test.md");
-        st.requirements = vec![
-            req("INV-A1", ReqType::Invariant),
-            req("ISC-X1", ReqType::Milestone),
-            req("ISC-X2", ReqType::Milestone),
-            req("ISC-Y1", ReqType::Milestone), // registered but not in the subgoal
-        ];
+        st.requirements.add("INV-A1", ReqType::Invariant, "text for INV-A1").unwrap();
+        st.requirements.add("ISC-X1", ReqType::Milestone, "text for ISC-X1").unwrap();
+        st.requirements.add("ISC-X2", ReqType::Milestone, "text for ISC-X2").unwrap();
+        // registered but not in the subgoal
+        st.requirements.add("ISC-Y1", ReqType::Milestone, "text for ISC-Y1").unwrap();
         st.subgoals.push(Subgoal {
             id: "SG-1".into(),
             artifacts: vec!["src/x.rs".into()],

@@ -1,120 +1,12 @@
 //! Sync the requirements registry from the invariant doc and the PRD.
 //! Doc is authoritative for invariants; PRD checkboxes are authoritative for milestones.
+//! Grammar lives in `prd_md`; the diff lives on `state::Registry`. This module is I/O glue.
 
-use crate::state::{self, ReqStatus, ReqType, Requirement};
-use anyhow::{bail, Context, Result};
-use std::fmt;
+use crate::prd_md;
+use crate::state::{self, ReqType};
+use anyhow::{Context, Result};
 use std::fs;
 use std::path::Path;
-
-#[derive(Debug, PartialEq)]
-pub struct ParsedReq {
-    pub id: String,
-    pub req_type: ReqType,
-    pub text: String,
-}
-
-/// Extract requirement lines (`- [ ] INV-X: text | Verify: method`) from markdown.
-/// Non-requirement lines are ignored; a malformed requirement line is a hard error.
-pub fn parse_requirements(md: &str) -> Result<Vec<ParsedReq>> {
-    let mut out = Vec::new();
-    for (n, line) in md.lines().enumerate() {
-        let rest = match line
-            .strip_prefix("- [ ] ")
-            .or_else(|| line.strip_prefix("- [x] "))
-        {
-            Some(r) => r,
-            None => continue,
-        };
-        let req_type = if rest.starts_with("INV-") {
-            ReqType::Invariant
-        } else if rest.starts_with("ISC-") {
-            ReqType::Milestone
-        } else {
-            continue; // checkbox line but not a requirement
-        };
-        let parsed = rest.split_once(": ").and_then(|(id, tail)| {
-            let text = tail.split_once(" | Verify:").map(|(t, _)| t).unwrap_or(tail);
-            let text = text.trim();
-            (!id.contains(' ') && !text.is_empty()).then(|| ParsedReq {
-                id: id.trim_end_matches(':').to_string(),
-                req_type,
-                text: text.to_string(),
-            })
-        });
-        match parsed {
-            Some(p) => out.push(p),
-            None => bail!(
-                "line {}: cannot parse requirement line {line:?}; register it manually with `prd-state req add`",
-                n + 1
-            ),
-        }
-    }
-    Ok(out)
-}
-
-#[derive(Debug, Default, PartialEq)]
-pub struct SyncReport {
-    pub added_invariants: usize,
-    pub added_milestones: usize,
-    pub removed: usize,
-    pub unchanged: usize,
-}
-
-impl fmt::Display for SyncReport {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "sync: +{} invariants, +{} milestones, {} removed, {} unchanged",
-            self.added_invariants, self.added_milestones, self.removed, self.unchanged
-        )
-    }
-}
-
-/// Diff parsed requirements into the registry. Pure; no I/O.
-pub fn apply(reqs: &mut Vec<Requirement>, parsed: &[ParsedReq]) -> SyncReport {
-    let mut report = SyncReport::default();
-    for p in parsed {
-        match reqs.iter_mut().find(|r| r.id == p.id) {
-            None => {
-                let status = match p.req_type {
-                    ReqType::Invariant => None,
-                    ReqType::Milestone => Some(ReqStatus::Active),
-                };
-                reqs.push(Requirement {
-                    id: p.id.clone(),
-                    req_type: p.req_type,
-                    status,
-                    text: p.text.clone(),
-                });
-                match p.req_type {
-                    ReqType::Invariant => report.added_invariants += 1,
-                    ReqType::Milestone => report.added_milestones += 1,
-                }
-            }
-            Some(existing) => {
-                existing.text = p.text.clone(); // source is authoritative for wording
-                if existing.status == Some(ReqStatus::Removed) {
-                    existing.status = Some(ReqStatus::Active); // reappeared in PRD
-                    report.added_milestones += 1;
-                } else {
-                    report.unchanged += 1;
-                }
-            }
-        }
-    }
-    // Milestones absent from the PRD are removed. Invariants are never removed by sync.
-    for r in reqs.iter_mut() {
-        if r.req_type == ReqType::Milestone
-            && r.status != Some(ReqStatus::Removed)
-            && !parsed.iter().any(|p| p.id == r.id)
-        {
-            r.status = Some(ReqStatus::Removed);
-            report.removed += 1;
-        }
-    }
-    report
-}
 
 /// Load state, parse the invariant doc (if present) and the PRD, diff, save, report.
 pub fn run(dir: &Path, invariant_doc: Option<&Path>) -> Result<String> {
@@ -126,7 +18,7 @@ pub fn run(dir: &Path, invariant_doc: Option<&Path>) -> Result<String> {
             let md = fs::read_to_string(doc)
                 .with_context(|| format!("cannot read {}", doc.display()))?;
             parsed.extend(
-                parse_requirements(&md)
+                prd_md::parse_requirements(&md)
                     .with_context(|| format!("in invariant doc {}", doc.display()))?
                     .into_iter()
                     .filter(|p| p.req_type == ReqType::Invariant),
@@ -137,13 +29,15 @@ pub fn run(dir: &Path, invariant_doc: Option<&Path>) -> Result<String> {
     let prd_path = dir.join(&st.prd_path);
     let prd = fs::read_to_string(&prd_path)
         .with_context(|| format!("cannot read PRD {}", prd_path.display()))?;
-    for p in parse_requirements(&prd).with_context(|| format!("in PRD {}", prd_path.display()))? {
+    for p in prd_md::parse_requirements(&prd)
+        .with_context(|| format!("in PRD {}", prd_path.display()))?
+    {
         // Dedup: doc wins for invariants already loaded.
         if !parsed.iter().any(|q| q.id == p.id) {
             parsed.push(p);
         }
     }
-    let report = apply(&mut st.requirements, &parsed);
+    let report = st.requirements.upsert_from_parsed(&parsed);
     state::save(dir, &st)?;
     Ok(format!("{report}{doc_note}"))
 }
@@ -153,78 +47,6 @@ mod tests {
     use super::*;
     use crate::state::State;
     use tempfile::TempDir;
-
-    #[test]
-    fn parses_checked_unchecked_and_ignores_prose() {
-        let md = "# Title\nprose here\n- [ ] ISC-A1: does a thing | Verify: Test: unit\n- [x] INV-B2: never breaks | Verify: Grep\n- [ ] plain checkbox, not a requirement\n";
-        let reqs = parse_requirements(md).unwrap();
-        assert_eq!(reqs.len(), 2);
-        assert_eq!(reqs[0], ParsedReq { id: "ISC-A1".into(), req_type: ReqType::Milestone, text: "does a thing".into() });
-        assert_eq!(reqs[1], ParsedReq { id: "INV-B2".into(), req_type: ReqType::Invariant, text: "never breaks".into() });
-    }
-
-    #[test]
-    fn malformed_line_errors_with_line_number_and_fallback() {
-        let md = "ok\n- [ ] ISC-BAD no colon separator\n";
-        let err = parse_requirements(md).unwrap_err().to_string();
-        assert!(err.contains("line 2"), "{err}");
-        assert!(err.contains("ISC-BAD"), "{err}");
-        assert!(err.contains("req add"), "{err}");
-    }
-
-    #[test]
-    fn apply_registers_invariants_deduplicating() {
-        let mut reqs = vec![Requirement {
-            id: "INV-A1".into(),
-            req_type: ReqType::Invariant,
-            status: None,
-            text: "old wording".into(),
-        }];
-        let parsed = vec![
-            ParsedReq { id: "INV-A1".into(), req_type: ReqType::Invariant, text: "new wording".into() },
-            ParsedReq { id: "INV-A2".into(), req_type: ReqType::Invariant, text: "b".into() },
-            ParsedReq { id: "INV-A3".into(), req_type: ReqType::Invariant, text: "c".into() },
-        ];
-        let report = apply(&mut reqs, &parsed);
-        assert_eq!(report.added_invariants, 2);
-        assert_eq!(report.unchanged, 1);
-        assert_eq!(reqs.len(), 3);
-        assert_eq!(reqs[0].text, "new wording"); // doc authoritative
-    }
-
-    #[test]
-    fn apply_diffs_milestones_preserving_satisfied() {
-        let mut reqs = vec![
-            Requirement { id: "ISC-A".into(), req_type: ReqType::Milestone, status: Some(ReqStatus::Satisfied), text: "a".into() },
-            Requirement { id: "ISC-B".into(), req_type: ReqType::Milestone, status: Some(ReqStatus::Active), text: "b".into() },
-        ];
-        // PRD now has A and C; B is gone.
-        let parsed = vec![
-            ParsedReq { id: "ISC-A".into(), req_type: ReqType::Milestone, text: "a".into() },
-            ParsedReq { id: "ISC-C".into(), req_type: ReqType::Milestone, text: "c".into() },
-        ];
-        let report = apply(&mut reqs, &parsed);
-        assert_eq!(report.added_milestones, 1);
-        assert_eq!(report.removed, 1);
-        assert_eq!(report.unchanged, 1);
-        let get = |id: &str| reqs.iter().find(|r| r.id == id).unwrap().status;
-        assert_eq!(get("ISC-A"), Some(ReqStatus::Satisfied));
-        assert_eq!(get("ISC-B"), Some(ReqStatus::Removed));
-        assert_eq!(get("ISC-C"), Some(ReqStatus::Active));
-    }
-
-    #[test]
-    fn removed_milestone_reactivates_when_back_in_prd() {
-        let mut reqs = vec![Requirement {
-            id: "ISC-A".into(),
-            req_type: ReqType::Milestone,
-            status: Some(ReqStatus::Removed),
-            text: "a".into(),
-        }];
-        let parsed = vec![ParsedReq { id: "ISC-A".into(), req_type: ReqType::Milestone, text: "a".into() }];
-        apply(&mut reqs, &parsed);
-        assert_eq!(reqs[0].status, Some(ReqStatus::Active));
-    }
 
     #[test]
     fn run_reports_counts_and_missing_doc() {

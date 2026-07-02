@@ -1,44 +1,22 @@
 //! Manual requirement-registry edits — the fallback when `sync` cannot parse.
 
-use crate::state::{self, ReqStatus, ReqType, Requirement};
-use anyhow::{bail, Result};
+use crate::state::{self, ReqType};
+use anyhow::Result;
 use std::path::Path;
 
 pub fn add(dir: &Path, id: &str, req_type: ReqType, text: &str) -> Result<String> {
     let mut st = state::load(dir)?;
-    if st.requirements.iter().any(|r| r.id == id) {
-        bail!("requirement {id} already registered");
-    }
-    let status = match req_type {
-        ReqType::Milestone => Some(ReqStatus::Active),
-        ReqType::Invariant => None,
-    };
-    st.requirements.push(Requirement {
-        id: id.to_string(),
-        req_type,
-        status,
-        text: text.to_string(),
-    });
+    st.requirements.add(id, req_type, text)?;
     state::save(dir, &st)?;
-    Ok(format!("added {id} ({req_type:?})", req_type = req_type))
+    Ok(format!("added {id} ({req_type:?})"))
 }
 
 pub fn remove(dir: &Path, id: &str) -> Result<String> {
     let mut st = state::load(dir)?;
-    let Some(idx) = st.requirements.iter().position(|r| r.id == id) else {
-        bail!("requirement {id} not found");
-    };
-    let msg = match st.requirements[idx].req_type {
+    let msg = match st.requirements.remove(id)? {
         // Milestones stay in the registry as history; the PRD may still list them.
-        ReqType::Milestone => {
-            st.requirements[idx].status = Some(ReqStatus::Removed);
-            format!("marked {id} removed")
-        }
-        // Invariants have no status; a manual remove deletes the entry.
-        ReqType::Invariant => {
-            st.requirements.remove(idx);
-            format!("deleted invariant {id}")
-        }
+        ReqType::Milestone => format!("marked {id} removed"),
+        ReqType::Invariant => format!("deleted invariant {id}"),
     };
     state::save(dir, &st)?;
     Ok(msg)
@@ -47,7 +25,7 @@ pub fn remove(dir: &Path, id: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::State;
+    use crate::state::{ReqStatus, State};
     use tempfile::TempDir;
 
     fn dir_with_state() -> TempDir {

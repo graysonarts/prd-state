@@ -11,10 +11,10 @@ mod verify;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Manage the prd_work_loop state.json — the tool, not the agent, owns the schema.
+/// Manage the `prd_work_loop` state.json — the tool, not the agent, owns the schema.
 #[derive(Parser)]
 #[command(name = "prd-state", version)]
 struct Cli {
@@ -38,7 +38,7 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
-    /// Set the current phase; OBSERVE also captures start_commit from git HEAD
+    /// Set the current phase; OBSERVE also captures `start_commit` from git HEAD
     Phase {
         #[arg(ignore_case = true)]
         phase: state::Phase,
@@ -65,7 +65,7 @@ enum Cmd {
         /// Citation proving the result (line, test, or search)
         evidence: String,
     },
-    /// Mark a subgoal in_progress and derive its pre-flight checklist
+    /// Mark a subgoal `in_progress` and derive its pre-flight checklist
     Decide {
         /// Subgoal id (e.g. SG-3)
         sg_id: String,
@@ -109,14 +109,16 @@ enum ReqCmd {
 }
 
 /// Artifact paths are repo-root-relative; fall back to the PRD dir outside git.
-fn artifact_root(dir: &PathBuf) -> PathBuf {
+fn artifact_root(dir: &Path) -> PathBuf {
     Command::new("git")
         .args(["-C", &dir.to_string_lossy(), "rev-parse", "--show-toplevel"])
         .output()
         .ok()
         .filter(|o| o.status.success())
-        .map(|o| PathBuf::from(String::from_utf8_lossy(&o.stdout).trim()))
-        .unwrap_or_else(|| dir.clone())
+        .map_or_else(
+            || dir.to_path_buf(),
+            |o| PathBuf::from(String::from_utf8_lossy(&o.stdout).trim()),
+        )
 }
 
 fn main() -> Result<()> {

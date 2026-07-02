@@ -1,4 +1,4 @@
-//! Set the current phase; entering OBSERVE captures start_commit from git HEAD.
+//! Set the current phase; entering OBSERVE captures `start_commit` from git HEAD.
 
 use crate::state::{self, Phase};
 use anyhow::Result;

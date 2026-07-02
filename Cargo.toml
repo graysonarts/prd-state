@@ -3,6 +3,9 @@ name = "prd-state"
 version = "0.1.0"
 edition = "2021"
 
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }

@@ -1,9 +1,57 @@
-//! Pure PRD-markdown transforms: checkbox flips, LOG append, frontmatter
-//! updates. All functions are &str -> String; file I/O stays in callers.
+//! The PRD grammar module: requirement-line parsing plus pure markdown
+//! transforms (checkbox flips, LOG append, frontmatter updates). Read and
+//! write of the requirement-line syntax live here so they agree by
+//! construction. Transforms are &str -> String; file I/O stays in callers.
 
-use anyhow::{Context, Result};
+use crate::state::ReqType;
+use anyhow::{bail, Context, Result};
 use std::fs;
 use std::path::Path;
+
+#[derive(Debug, PartialEq)]
+pub struct ParsedReq {
+    pub id: String,
+    pub req_type: ReqType,
+    pub text: String,
+}
+
+/// Extract requirement lines (`- [ ] INV-X: text | Verify: method`) from markdown.
+/// Non-requirement lines are ignored; a malformed requirement line is a hard error.
+pub fn parse_requirements(md: &str) -> Result<Vec<ParsedReq>> {
+    let mut out = Vec::new();
+    for (n, line) in md.lines().enumerate() {
+        let Some(rest) = line
+            .strip_prefix("- [ ] ")
+            .or_else(|| line.strip_prefix("- [x] "))
+        else {
+            continue;
+        };
+        let req_type = if rest.starts_with("INV-") {
+            ReqType::Invariant
+        } else if rest.starts_with("ISC-") {
+            ReqType::Milestone
+        } else {
+            continue; // checkbox line but not a requirement
+        };
+        let parsed = rest.split_once(": ").and_then(|(id, tail)| {
+            let text = tail.split_once(" | Verify:").map_or(tail, |(t, _)| t);
+            let text = text.trim();
+            (!id.contains(' ') && !text.is_empty()).then(|| ParsedReq {
+                id: id.trim_end_matches(':').to_string(),
+                req_type,
+                text: text.to_string(),
+            })
+        });
+        match parsed {
+            Some(p) => out.push(p),
+            None => bail!(
+                "line {}: cannot parse requirement line {line:?}; register it manually with `prd-state req add`",
+                n + 1
+            ),
+        }
+    }
+    Ok(out)
+}
 
 /// Flip `- [ ] <id>:` to `- [x] <id>:` for the given ids only.
 pub fn flip_checkboxes(prd: &str, ids: &[String]) -> String {
@@ -53,10 +101,36 @@ mod tests {
     const PRD: &str = "---\ntitle: t\nstatus: ACTIVE\nupdated: 2026-01-01\nverification_summary: \"old\"\nfailing_criteria: none\nlast_phase: ACT\n---\n\n# PRD\n\n- [ ] ISC-A1: first | Verify: test\n- [ ] ISC-A2: second | Verify: test\n\n## LOG\n\n### Iteration 1 — 2026-01-01\n- **Overall:** PASS\n\n### Iteration 2 — 2026-01-02\n- **Overall:** PASS\n";
 
     #[test]
+    fn parses_checked_unchecked_and_ignores_prose() {
+        let md = "# Title\nprose here\n- [ ] ISC-A1: does a thing | Verify: Test: unit\n- [x] INV-B2: never breaks | Verify: Grep\n- [ ] plain checkbox, not a requirement\n";
+        let reqs = parse_requirements(md).unwrap();
+        assert_eq!(reqs.len(), 2);
+        assert_eq!(reqs[0], ParsedReq { id: "ISC-A1".into(), req_type: ReqType::Milestone, text: "does a thing".into() });
+        assert_eq!(reqs[1], ParsedReq { id: "INV-B2".into(), req_type: ReqType::Invariant, text: "never breaks".into() });
+    }
+
+    #[test]
+    fn malformed_line_errors_with_line_number_and_fallback() {
+        let md = "ok\n- [ ] ISC-BAD no colon separator\n";
+        let err = parse_requirements(md).unwrap_err().to_string();
+        assert!(err.contains("line 2"), "{err}");
+        assert!(err.contains("ISC-BAD"), "{err}");
+        assert!(err.contains("req add"), "{err}");
+    }
+
+    #[test]
     fn flip_checkboxes_flips_only_named_ids() {
         let out = flip_checkboxes(PRD, &["ISC-A1".into()]);
         assert!(out.contains("- [x] ISC-A1: first"));
         assert!(out.contains("- [ ] ISC-A2: second"));
+    }
+
+    #[test]
+    fn parse_survives_flip_round_trip() {
+        let before = parse_requirements(PRD).unwrap();
+        let flipped = flip_checkboxes(PRD, &["ISC-A1".into(), "ISC-A2".into()]);
+        let after = parse_requirements(&flipped).unwrap();
+        assert_eq!(before, after, "flip must not change what parse sees");
     }
 
     #[test]

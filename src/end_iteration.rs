@@ -2,8 +2,9 @@
 //! stall handling, PRD markdown writes, and transient-field reset.
 
 use crate::prd_md;
-use crate::state::{self, ReqStatus, ReqType, SubgoalStatus, VerifyStatus};
+use crate::state::{self, CurrentAction, ReqType, State, SubgoalStatus, VerifyStatus};
 use anyhow::{Context, Result};
+use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -17,26 +18,34 @@ fn today() -> String {
         .arg("+%F")
         .output()
         .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_else(|| "unknown".into())
+        .filter(|o| o.status.success()).map_or_else(|| "unknown".into(), |o| String::from_utf8_lossy(&o.stdout).trim().to_string())
 }
 
-/// Iteration close-out derived from verify_results. A milestone counts as
-/// passed only with an explicit PASS result — absent evidence is a fail.
-pub fn run(dir: &Path, reflection: Option<&str>) -> Result<String> {
-    let mut st = state::load(dir)?;
+/// Iteration close-out computed from state — the pure policy core. A milestone
+/// counts as passed only with an explicit PASS result; absent evidence is a fail.
+#[derive(Debug, PartialEq)]
+pub struct IterationOutcome {
+    pub overall_pass: bool,
+    pub satisfied: Vec<String>,
+    pub failed: Vec<String>,
+    pub unverified: Vec<String>,
+    pub next_stall_count: u32,
+    /// The in-progress subgoal, if any, and whether this outcome completes it.
+    pub in_progress_subgoal: Option<String>,
+    pub subgoal_complete: bool,
+}
+
+pub fn outcome(st: &State) -> Result<IterationOutcome> {
     let action = st
         .current_action
-        .clone()
+        .as_ref()
         .context("no current_action; nothing to end (run `decide` first)")?;
-
     let passed = |id: &str| {
         st.verify_results
             .iter()
             .any(|r| r.id == id && r.status == VerifyStatus::Pass)
     };
-    let failed_ids: Vec<String> = st
+    let failed: Vec<String> = st
         .verify_results
         .iter()
         .filter(|r| r.status == VerifyStatus::Fail)
@@ -48,76 +57,81 @@ pub fn run(dir: &Path, reflection: Option<&str>) -> Result<String> {
         .filter(|m| !st.verify_results.iter().any(|r| &r.id == *m))
         .cloned()
         .collect();
-    let overall_pass = failed_ids.is_empty() && unverified.is_empty();
-
+    let overall_pass = failed.is_empty() && unverified.is_empty();
     let satisfied: Vec<String> = action
         .applicable_milestones
         .iter()
         .filter(|m| passed(m))
         .cloned()
         .collect();
+    let in_progress = st.subgoals.iter().find(|sg| sg.status == SubgoalStatus::InProgress);
+    Ok(IterationOutcome {
+        overall_pass,
+        next_stall_count: if overall_pass { 0 } else { st.stall_count + 1 },
+        subgoal_complete: in_progress
+            .is_some_and(|sg| sg.milestones.iter().all(|m| satisfied.contains(m))),
+        in_progress_subgoal: in_progress.map(|sg| sg.id.clone()),
+        satisfied,
+        failed,
+        unverified,
+    })
+}
 
-    let mut out = format!("overall: {}", if overall_pass { "PASS" } else { "FAIL" });
-    if !failed_ids.is_empty() {
-        out.push_str(&format!(" (FAIL: {})", failed_ids.join(", ")));
+/// Apply the outcome: registry and subgoal bookkeeping, PRD writes,
+/// transient-field reset. Thin I/O shell around `outcome`.
+pub fn run(dir: &Path, reflection: Option<&str>) -> Result<String> {
+    let mut st = state::load(dir)?;
+    let o = outcome(&st)?;
+    let action = st.current_action.clone().expect("outcome checked current_action");
+
+    let mut out = format!("overall: {}", if o.overall_pass { "PASS" } else { "FAIL" });
+    if !o.failed.is_empty() {
+        let _ = write!(out, " (FAIL: {})", o.failed.join(", "));
     }
-    if !unverified.is_empty() {
-        out.push_str(&format!(" (no verify result for {})", unverified.join(", ")));
+    if !o.unverified.is_empty() {
+        let _ = write!(out, " (no verify result for {})", o.unverified.join(", "));
     }
 
-    for id in &satisfied {
-        let req = st
-            .requirements
-            .iter_mut()
-            .find(|r| r.id == *id)
-            .with_context(|| format!("milestone {id} not in registry"))?;
-        req.status = Some(ReqStatus::Satisfied);
+    for id in &o.satisfied {
+        st.requirements.mark_satisfied(id)?;
     }
-    out.push_str(&format!("\nsatisfied: {}", if satisfied.is_empty() { "none".into() } else { satisfied.join(", ") }));
+    let _ = write!(out, "\nsatisfied: {}", if o.satisfied.is_empty() { "none".into() } else { o.satisfied.join(", ") });
 
-    if let Some(sg) = st.subgoals.iter_mut().find(|sg| sg.status == SubgoalStatus::InProgress) {
-        let all_passed = sg.milestones.iter().all(|m| satisfied.contains(m));
-        if all_passed {
+    if let Some(sg_id) = &o.in_progress_subgoal {
+        if o.subgoal_complete {
+            let sg = st.subgoals.iter_mut().find(|sg| sg.id == *sg_id).expect("outcome found it");
             sg.status = SubgoalStatus::Complete;
-            out.push_str(&format!("\nsubgoal {} complete", sg.id));
+            let _ = write!(out, "\nsubgoal {sg_id} complete");
         } else {
-            out.push_str(&format!("\nsubgoal {} still in_progress", sg.id));
+            let _ = write!(out, "\nsubgoal {sg_id} still in_progress");
         }
     }
 
-    if overall_pass {
-        st.stall_count = 0;
-    } else {
-        st.stall_count += 1;
-    }
-    out.push_str(&format!("\nstall_count: {}", st.stall_count));
+    st.stall_count = o.next_stall_count;
+    let _ = write!(out, "\nstall_count: {}", st.stall_count);
     if st.stall_count >= STALL_LIMIT {
         out.push_str("\nWARNING: 3 consecutive failed iterations — stop and ask the user for guidance");
     }
 
     // PRD writes: checkbox flips, frontmatter, LOG append — one atomic save.
-    let remaining = st
-        .requirements
-        .iter()
-        .filter(|r| r.req_type == ReqType::Milestone && r.status == Some(ReqStatus::Active))
-        .count();
+    let remaining = st.requirements.pending_milestones();
     let date = today();
     let closing = st.iteration + 1;
     let prd_path = dir.join(&st.prd_path);
     let mut prd = fs::read_to_string(&prd_path)
         .with_context(|| format!("cannot read PRD {}", prd_path.display()))?;
-    prd = prd_md::flip_checkboxes(&prd, &satisfied);
+    prd = prd_md::flip_checkboxes(&prd, &o.satisfied);
 
-    let mut failing = failed_ids.clone();
-    failing.extend(unverified.iter().map(|m| format!("{m} (unverified)")));
+    let mut failing = o.failed.clone();
+    failing.extend(o.unverified.iter().map(|m| format!("{m} (unverified)")));
     let mut updates = vec![
         (
             "verification_summary",
             format!(
                 "\"Iteration {closing}: {}/{} PASS ({})\"",
-                satisfied.len(),
+                o.satisfied.len(),
                 action.applicable_milestones.len(),
-                if satisfied.is_empty() { "none".into() } else { satisfied.join(", ") }
+                if o.satisfied.is_empty() { "none".into() } else { o.satisfied.join(", ") }
             ),
         ),
         (
@@ -133,6 +147,32 @@ pub fn run(dir: &Path, reflection: Option<&str>) -> Result<String> {
     }
     prd = prd_md::update_frontmatter(&prd, &updates)?;
 
+    let entry = log_entry(&st, &action, &o, reflection, remaining, closing, &date);
+    prd = prd_md::append_log(&prd, &entry);
+    prd_md::save(&prd_path, &prd)?;
+    let _ = write!(out, "\nPRD updated: {}", st.prd_path);
+
+    st.iteration += 1;
+    st.current_phase = None;
+    st.start_commit = None;
+    st.current_action = None;
+    st.pre_flight_checklist.clear();
+    st.verify_results.clear();
+    state::save(dir, &st)?;
+    let _ = write!(out, "\niteration: {} (between iterations)", st.iteration);
+    Ok(out)
+}
+
+/// Render the LOG entry appended to the PRD for this iteration.
+fn log_entry(
+    st: &State,
+    action: &CurrentAction,
+    o: &IterationOutcome,
+    reflection: Option<&str>,
+    remaining: usize,
+    closing: u32,
+    date: &str,
+) -> String {
     let invariant_ids: Vec<&str> = st
         .pre_flight_checklist
         .iter()
@@ -145,7 +185,7 @@ pub fn run(dir: &Path, reflection: Option<&str>) -> Result<String> {
         let inv_fails: Vec<&str> = invariant_ids
             .iter()
             .copied()
-            .filter(|id| failed_ids.iter().any(|f| f == id))
+            .filter(|id| o.failed.iter().any(|f| f == id))
             .collect();
         if inv_fails.is_empty() { "all PASS".to_string() } else { format!("FAIL: {}", inv_fails.join(", ")) }
     };
@@ -156,65 +196,42 @@ pub fn run(dir: &Path, reflection: Option<&str>) -> Result<String> {
          - **Milestones addressed:** {}\n\
          - **Invariants verified:** {}\n\
          - **Overall:** {}",
-        st.start_commit.as_deref().map(|c| format!("`{c}`")).unwrap_or_else(|| "none".into()),
+        st.start_commit.as_deref().map_or_else(|| "none".into(), |c| format!("`{c}`")),
         action.artifacts.iter().map(|a| format!("`{a}`")).collect::<Vec<_>>().join(", "),
         action.tier,
         action.applicable_milestones.join(", "),
         invariants_line,
-        if overall_pass { "PASS" } else { "FAIL" },
+        if o.overall_pass { "PASS" } else { "FAIL" },
     );
     if let Some(r) = reflection {
-        entry.push_str(&format!("\n- **Reflection:** {r}"));
+        let _ = write!(entry, "\n- **Reflection:** {r}");
     }
-    entry.push_str(&format!("\n- **Remaining:** {remaining} milestones pending"));
-    prd = prd_md::append_log(&prd, &entry);
-    prd_md::save(&prd_path, &prd)?;
-    out.push_str(&format!("\nPRD updated: {}", st.prd_path));
-
-    st.iteration += 1;
-    st.current_phase = None;
-    st.start_commit = None;
-    st.current_action = None;
-    st.pre_flight_checklist.clear();
-    st.verify_results.clear();
-    state::save(dir, &st)?;
-    out.push_str(&format!("\niteration: {} (between iterations)", st.iteration));
-    Ok(out)
+    let _ = write!(entry, "\n- **Remaining:** {remaining} milestones pending");
+    entry
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::state::{
-        ChecklistItem, CurrentAction, Phase, Requirement, State, Subgoal, Tier, VerifyResult,
+        ChecklistItem, CurrentAction, Phase, ReqStatus, Subgoal, Tier, VerifyResult,
     };
     use tempfile::TempDir;
 
     const PRD_FIXTURE: &str = "---\ntitle: t\nstatus: ACTIVE\nupdated: 2026-01-01\nverification_summary: \"old\"\nfailing_criteria: old\nlast_phase: ACT\n---\n\n# PRD\n\n- [ ] ISC-X1: first | Verify: test\n- [ ] ISC-X2: second | Verify: test\n\n## LOG\n\n### Iteration 1 — 2026-01-01\n- **Overall:** PASS\n\n### Iteration 2 — 2026-01-02\n- **Overall:** PASS\n";
 
-    fn milestone(id: &str, status: ReqStatus) -> Requirement {
-        Requirement {
-            id: id.into(),
-            req_type: ReqType::Milestone,
-            status: Some(status),
-            text: format!("text for {id}"),
-        }
-    }
-
     fn result(id: &str, status: VerifyStatus) -> VerifyResult {
         VerifyResult { id: id.into(), status, evidence: "cited".into() }
     }
 
-    /// State mid-iteration: SG-1 in_progress over ISC-X1/ISC-X2, phase VERIFY.
+    /// State mid-iteration: SG-1 `in_progress` over ISC-X1/ISC-X2, phase VERIFY.
     fn mid_iteration_state() -> State {
         let mut st = State::new("PRD-test.md");
         st.iteration = 4;
         st.current_phase = Some(Phase::Verify);
         st.start_commit = Some("abc1234".into());
-        st.requirements = vec![
-            milestone("ISC-X1", ReqStatus::Active),
-            milestone("ISC-X2", ReqStatus::Active),
-        ];
+        st.requirements.add("ISC-X1", ReqType::Milestone, "text for ISC-X1").unwrap();
+        st.requirements.add("ISC-X2", ReqType::Milestone, "text for ISC-X2").unwrap();
         st.subgoals.push(Subgoal {
             id: "SG-1".into(),
             artifacts: vec!["src/x.rs".into()],
@@ -244,11 +261,61 @@ mod tests {
     }
 
     fn req_status(st: &State, id: &str) -> ReqStatus {
-        st.requirements.iter().find(|r| r.id == id).unwrap().status.unwrap()
+        st.requirements.find(id).unwrap().status.unwrap()
     }
 
     fn prd(dir: &TempDir) -> String {
         fs::read_to_string(dir.path().join("PRD-test.md")).unwrap()
+    }
+
+    // Pure-core tests: verdict policy without TempDir or PRD fixtures.
+
+    #[test]
+    fn outcome_all_pass_resets_stall_and_completes_subgoal() {
+        let mut st = mid_iteration_state();
+        st.stall_count = 2;
+        st.verify_results = vec![
+            result("ISC-X1", VerifyStatus::Pass),
+            result("ISC-X2", VerifyStatus::Pass),
+        ];
+        let o = outcome(&st).unwrap();
+        assert!(o.overall_pass);
+        assert_eq!(o.satisfied, vec!["ISC-X1", "ISC-X2"]);
+        assert_eq!(o.next_stall_count, 0);
+        assert_eq!(o.in_progress_subgoal.as_deref(), Some("SG-1"));
+        assert!(o.subgoal_complete);
+    }
+
+    #[test]
+    fn outcome_unverified_milestone_is_a_fail() {
+        let mut st = mid_iteration_state();
+        st.verify_results = vec![result("ISC-X1", VerifyStatus::Pass)]; // ISC-X2 never verified
+        let o = outcome(&st).unwrap();
+        assert!(!o.overall_pass);
+        assert_eq!(o.unverified, vec!["ISC-X2"]);
+        assert_eq!(o.satisfied, vec!["ISC-X1"]);
+        assert_eq!(o.next_stall_count, 1);
+        assert!(!o.subgoal_complete);
+    }
+
+    #[test]
+    fn outcome_explicit_fail_increments_stall() {
+        let mut st = mid_iteration_state();
+        st.stall_count = 1;
+        st.verify_results = vec![
+            result("ISC-X1", VerifyStatus::Pass),
+            result("ISC-X2", VerifyStatus::Fail),
+        ];
+        let o = outcome(&st).unwrap();
+        assert!(!o.overall_pass);
+        assert_eq!(o.failed, vec!["ISC-X2"]);
+        assert_eq!(o.next_stall_count, 2);
+    }
+
+    #[test]
+    fn outcome_without_current_action_errors() {
+        let err = outcome(&State::new("PRD-test.md")).unwrap_err();
+        assert!(err.to_string().contains("no current_action"));
     }
 
     #[test]
@@ -378,7 +445,8 @@ mod tests {
     #[test]
     fn not_complete_while_other_milestones_active() {
         let mut st = mid_iteration_state();
-        st.requirements.push(milestone("ISC-Y1", ReqStatus::Active)); // outside this subgoal
+        // outside this subgoal
+        st.requirements.add("ISC-Y1", ReqType::Milestone, "text for ISC-Y1").unwrap();
         st.verify_results = vec![
             result("ISC-X1", VerifyStatus::Pass),
             result("ISC-X2", VerifyStatus::Pass),

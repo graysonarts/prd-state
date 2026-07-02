@@ -1,7 +1,11 @@
 //! Canonical state.json schema and file I/O. Strict: unknown fields are errors.
+//! Home of the requirement Registry: every Milestone status transition and
+//! traversal goes through its interface.
 
+use crate::prd_md::ParsedReq;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -128,9 +132,157 @@ pub struct Requirement {
     #[serde(rename = "type")]
     pub req_type: ReqType,
     /// Milestones: active | satisfied | removed. Invariants carry no status.
+    /// Enforced by Registry's `TryFrom` on load and its mutation methods.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub status: Option<ReqStatus>,
     pub text: String,
+}
+
+/// The requirement registry. The vec is private: reads go through Deref,
+/// every mutation through a method, so the Milestone/Invariant status rule
+/// holds by construction.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(try_from = "Vec<Requirement>")]
+pub struct Registry(Vec<Requirement>);
+
+impl TryFrom<Vec<Requirement>> for Registry {
+    type Error = String;
+
+    fn try_from(reqs: Vec<Requirement>) -> Result<Self, String> {
+        for r in &reqs {
+            match (r.req_type, r.status) {
+                (ReqType::Invariant, Some(_)) => {
+                    return Err(format!("invariant {} must not carry a status", r.id))
+                }
+                (ReqType::Milestone, None) => {
+                    return Err(format!("milestone {} must carry a status", r.id))
+                }
+                _ => {}
+            }
+        }
+        Ok(Registry(reqs))
+    }
+}
+
+impl std::ops::Deref for Registry {
+    type Target = [Requirement];
+    fn deref(&self) -> &[Requirement] {
+        &self.0
+    }
+}
+
+impl Registry {
+    /// Register a requirement: Milestones start active, Invariants carry no status.
+    pub fn add(&mut self, id: &str, req_type: ReqType, text: &str) -> Result<()> {
+        if self.find(id).is_some() {
+            bail!("requirement {id} already registered");
+        }
+        self.0.push(Requirement {
+            id: id.to_string(),
+            req_type,
+            status: matches!(req_type, ReqType::Milestone).then_some(ReqStatus::Active),
+            text: text.to_string(),
+        });
+        Ok(())
+    }
+
+    /// Milestones stay in the registry as removed history; invariants have no
+    /// status, so a remove deletes the entry. Returns the removed entry's type.
+    pub fn remove(&mut self, id: &str) -> Result<ReqType> {
+        let Some(idx) = self.0.iter().position(|r| r.id == id) else {
+            bail!("requirement {id} not found");
+        };
+        let req_type = self.0[idx].req_type;
+        match req_type {
+            ReqType::Milestone => self.0[idx].status = Some(ReqStatus::Removed),
+            ReqType::Invariant => {
+                self.0.remove(idx);
+            }
+        }
+        Ok(req_type)
+    }
+
+    pub fn mark_satisfied(&mut self, id: &str) -> Result<()> {
+        let req = self
+            .0
+            .iter_mut()
+            .find(|r| r.id == id)
+            .with_context(|| format!("milestone {id} not in registry"))?;
+        if req.req_type != ReqType::Milestone {
+            bail!("{id} is an invariant; only milestones can be satisfied");
+        }
+        req.status = Some(ReqStatus::Satisfied);
+        Ok(())
+    }
+
+    pub fn find(&self, id: &str) -> Option<&Requirement> {
+        self.0.iter().find(|r| r.id == id)
+    }
+
+    pub fn invariants(&self) -> impl Iterator<Item = &Requirement> {
+        self.0.iter().filter(|r| r.req_type == ReqType::Invariant)
+    }
+
+    pub fn pending_milestones(&self) -> usize {
+        self.0
+            .iter()
+            .filter(|r| r.req_type == ReqType::Milestone && r.status == Some(ReqStatus::Active))
+            .count()
+    }
+
+    /// Diff parsed requirements into the registry. The source is authoritative
+    /// for wording; Milestones absent from it are removed, Invariants never are.
+    pub fn upsert_from_parsed(&mut self, parsed: &[ParsedReq]) -> SyncReport {
+        let mut report = SyncReport::default();
+        for p in parsed {
+            match self.0.iter_mut().find(|r| r.id == p.id) {
+                None => {
+                    self.add(&p.id, p.req_type, &p.text).expect("id checked absent");
+                    match p.req_type {
+                        ReqType::Invariant => report.added_invariants += 1,
+                        ReqType::Milestone => report.added_milestones += 1,
+                    }
+                }
+                Some(existing) => {
+                    existing.text.clone_from(&p.text);
+                    if existing.status == Some(ReqStatus::Removed) {
+                        existing.status = Some(ReqStatus::Active); // reappeared in PRD
+                        report.added_milestones += 1;
+                    } else {
+                        report.unchanged += 1;
+                    }
+                }
+            }
+        }
+        for r in &mut self.0 {
+            if r.req_type == ReqType::Milestone
+                && r.status != Some(ReqStatus::Removed)
+                && !parsed.iter().any(|p| p.id == r.id)
+            {
+                r.status = Some(ReqStatus::Removed);
+                report.removed += 1;
+            }
+        }
+        report
+    }
+}
+
+#[derive(Debug, Default, PartialEq)]
+pub struct SyncReport {
+    pub added_invariants: usize,
+    pub added_milestones: usize,
+    pub removed: usize,
+    pub unchanged: usize,
+}
+
+impl fmt::Display for SyncReport {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "sync: +{} invariants, +{} milestones, {} removed, {} unchanged",
+            self.added_invariants, self.added_milestones, self.removed, self.unchanged
+        )
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -145,7 +297,7 @@ pub struct State {
     pub verify_results: Vec<VerifyResult>,
     pub stall_count: u32,
     pub subgoals: Vec<Subgoal>,
-    pub requirements: Vec<Requirement>,
+    pub requirements: Registry,
 }
 
 impl State {
@@ -160,7 +312,7 @@ impl State {
             verify_results: Vec::new(),
             stall_count: 0,
             subgoals: Vec::new(),
-            requirements: Vec::new(),
+            requirements: Registry::default(),
         }
     }
 }
@@ -282,12 +434,7 @@ mod tests {
         let mut state = State::new("p.md");
         state.iteration = 7;
         state.current_phase = Some(Phase::Verify);
-        state.requirements.push(Requirement {
-            id: "ISC-X1".into(),
-            req_type: ReqType::Milestone,
-            status: Some(ReqStatus::Active),
-            text: "does the thing".into(),
-        });
+        state.requirements.add("ISC-X1", ReqType::Milestone, "does the thing").unwrap();
         save(dir.path(), &state).unwrap();
         assert!(!dir.path().join("state.json.tmp").exists());
         let loaded = load(dir.path()).unwrap();
@@ -300,13 +447,93 @@ mod tests {
     #[test]
     fn invariants_serialize_without_status_key() {
         let mut state = State::new("p.md");
-        state.requirements.push(Requirement {
-            id: "INV-A1".into(),
-            req_type: ReqType::Invariant,
-            status: None,
-            text: "always".into(),
-        });
+        state.requirements.add("INV-A1", ReqType::Invariant, "always").unwrap();
         let json = serde_json::to_string(&state).unwrap();
         assert!(!json.contains("\"status\":null"));
+    }
+
+    #[test]
+    fn load_rejects_invariant_with_status() {
+        let dir = TempDir::new().unwrap();
+        fs::write(
+            dir.path().join("state.json"),
+            r#"{"iteration":0,"current_phase":null,"start_commit":null,"prd_path":"p.md",
+                "current_action":null,"pre_flight_checklist":[],"verify_results":[],
+                "stall_count":0,"subgoals":[],
+                "requirements":[{"id":"INV-A1","type":"invariant","status":"active","text":"x"}]}"#,
+        )
+        .unwrap();
+        let err = format!("{:#}", load(dir.path()).unwrap_err());
+        assert!(err.contains("INV-A1 must not carry a status"), "error was: {err}");
+    }
+
+    #[test]
+    fn load_rejects_milestone_without_status() {
+        let dir = TempDir::new().unwrap();
+        fs::write(
+            dir.path().join("state.json"),
+            r#"{"iteration":0,"current_phase":null,"start_commit":null,"prd_path":"p.md",
+                "current_action":null,"pre_flight_checklist":[],"verify_results":[],
+                "stall_count":0,"subgoals":[],
+                "requirements":[{"id":"ISC-A1","type":"milestone","text":"x"}]}"#,
+        )
+        .unwrap();
+        let err = format!("{:#}", load(dir.path()).unwrap_err());
+        assert!(err.contains("ISC-A1 must carry a status"), "error was: {err}");
+    }
+
+    #[test]
+    fn mark_satisfied_rejects_invariants() {
+        let mut reg = Registry::default();
+        reg.add("INV-A1", ReqType::Invariant, "always").unwrap();
+        let err = reg.mark_satisfied("INV-A1").unwrap_err();
+        assert!(err.to_string().contains("only milestones"));
+    }
+
+    #[test]
+    fn upsert_registers_invariants_deduplicating() {
+        let mut reg = Registry::default();
+        reg.add("INV-A1", ReqType::Invariant, "old wording").unwrap();
+        let parsed = vec![
+            ParsedReq { id: "INV-A1".into(), req_type: ReqType::Invariant, text: "new wording".into() },
+            ParsedReq { id: "INV-A2".into(), req_type: ReqType::Invariant, text: "b".into() },
+            ParsedReq { id: "INV-A3".into(), req_type: ReqType::Invariant, text: "c".into() },
+        ];
+        let report = reg.upsert_from_parsed(&parsed);
+        assert_eq!(report.added_invariants, 2);
+        assert_eq!(report.unchanged, 1);
+        assert_eq!(reg.len(), 3);
+        assert_eq!(reg[0].text, "new wording"); // doc authoritative
+    }
+
+    #[test]
+    fn upsert_diffs_milestones_preserving_satisfied() {
+        let mut reg = Registry::default();
+        reg.add("ISC-A", ReqType::Milestone, "a").unwrap();
+        reg.mark_satisfied("ISC-A").unwrap();
+        reg.add("ISC-B", ReqType::Milestone, "b").unwrap();
+        // PRD now has A and C; B is gone.
+        let parsed = vec![
+            ParsedReq { id: "ISC-A".into(), req_type: ReqType::Milestone, text: "a".into() },
+            ParsedReq { id: "ISC-C".into(), req_type: ReqType::Milestone, text: "c".into() },
+        ];
+        let report = reg.upsert_from_parsed(&parsed);
+        assert_eq!(report.added_milestones, 1);
+        assert_eq!(report.removed, 1);
+        assert_eq!(report.unchanged, 1);
+        let get = |id: &str| reg.find(id).unwrap().status;
+        assert_eq!(get("ISC-A"), Some(ReqStatus::Satisfied));
+        assert_eq!(get("ISC-B"), Some(ReqStatus::Removed));
+        assert_eq!(get("ISC-C"), Some(ReqStatus::Active));
+    }
+
+    #[test]
+    fn upsert_reactivates_removed_milestone_back_in_prd() {
+        let mut reg = Registry::default();
+        reg.add("ISC-A", ReqType::Milestone, "a").unwrap();
+        reg.remove("ISC-A").unwrap();
+        let parsed = vec![ParsedReq { id: "ISC-A".into(), req_type: ReqType::Milestone, text: "a".into() }];
+        reg.upsert_from_parsed(&parsed);
+        assert_eq!(reg[0].status, Some(ReqStatus::Active));
     }
 }
