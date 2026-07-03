@@ -1,1 +1,2 @@
-Dogfood the tool as soon as it's possible to do so during development.
+- Dogfood the tool as soon as it's possible to do so during development.
+- Manage the `Cargo.toml` version number. Respect semantic versioning.
