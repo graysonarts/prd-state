@@ -2,8 +2,8 @@
 //! stall handling, PRD markdown writes, and transient-field reset.
 
 use crate::prd_md;
-use crate::state::{self, CurrentAction, ReqType, State, SubgoalStatus, VerifyStatus};
-use anyhow::{Context, Result};
+use crate::state::{self, State, SubgoalStatus, VerifyStatus};
+use anyhow::{bail, Context, Result};
 use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
@@ -79,13 +79,19 @@ pub fn outcome(st: &State) -> Result<IterationOutcome> {
 
 /// Apply the outcome: registry and subgoal bookkeeping, PRD writes,
 /// transient-field reset. Thin I/O shell around `outcome`.
-pub fn run(dir: &Path, reflection: Option<&str>) -> Result<String> {
+pub fn run(dir: &Path, reflection: Option<&str>, gate: Option<&str>) -> Result<String> {
     let mut st = state::load(dir)?;
     let o = outcome(&st)?;
     let action = st
         .current_action
         .clone()
         .context("no current_action; nothing to end (run `decide` first)")?;
+
+    // A PASS iteration must record its load-bearing insight; bail before any
+    // state or PRD write so a missing reflection never half-closes the loop.
+    if o.overall_pass && reflection.is_none() {
+        bail!("--reflection is required on a PASS iteration (use --reflection \"\" for no note)");
+    }
 
     let mut out = format!("overall: {}", if o.overall_pass { "PASS" } else { "FAIL" });
     if !o.failed.is_empty() {
@@ -154,7 +160,7 @@ pub fn run(dir: &Path, reflection: Option<&str>) -> Result<String> {
     }
     prd = prd_md::update_frontmatter(&prd, &updates)?;
 
-    let entry = log_entry(&st, &action, &o, reflection, remaining, closing, &date);
+    let entry = log_entry(&st, &o, reflection, gate, closing, &date);
     prd = prd_md::append_log(&prd, &entry);
     prd_md::save(&prd_path, &prd)?;
     let _ = write!(out, "\nPRD updated: {}", st.prd_path);
@@ -170,58 +176,46 @@ pub fn run(dir: &Path, reflection: Option<&str>) -> Result<String> {
     Ok(out)
 }
 
-/// Render the LOG entry appended to the PRD for this iteration.
+/// One dense bullet per iteration (grammar in the PRD).
 fn log_entry(
     st: &State,
-    action: &CurrentAction,
     o: &IterationOutcome,
     reflection: Option<&str>,
-    remaining: usize,
+    gate: Option<&str>,
     closing: u32,
     date: &str,
 ) -> String {
-    let invariant_ids: Vec<&str> = st
-        .pre_flight_checklist
-        .iter()
-        .filter(|c| c.req_type == ReqType::Invariant)
-        .map(|c| c.id.as_str())
-        .collect();
-    let invariants_line = if invariant_ids.is_empty() {
-        "none registered".to_string()
+    // `start_commit` is the OBSERVE HEAD (parent of this iteration's own commit,
+    // which end-iteration runs before); render it on PASS only.
+    let commit = if o.overall_pass {
+        st.start_commit.as_deref().map_or_else(String::new, |c| format!("`{c}` · "))
     } else {
-        let inv_fails: Vec<&str> = invariant_ids
-            .iter()
-            .copied()
-            .filter(|id| o.failed.iter().any(|f| f == id))
-            .collect();
-        if inv_fails.is_empty() { "all PASS".to_string() } else { format!("FAIL: {}", inv_fails.join(", ")) }
+        String::new()
     };
-    let mut entry = format!(
-        "### Iteration {closing} — {date}\n\
-         - **Start commit:** {}\n\
-         - **Artifacts:** {} (tier: {})\n\
-         - **Milestones addressed:** {}\n\
-         - **Invariants verified:** {}\n\
-         - **Overall:** {}",
-        st.start_commit.as_deref().map_or_else(|| "none".into(), |c| format!("`{c}`")),
-        action.artifacts.iter().map(|a| format!("`{a}`")).collect::<Vec<_>>().join(", "),
-        action.tier,
-        action.applicable_milestones.join(", "),
-        invariants_line,
-        if o.overall_pass { "PASS" } else { "FAIL" },
-    );
-    if let Some(r) = reflection {
-        let _ = write!(entry, "\n- **Reflection:** {r}");
-    }
-    let _ = write!(entry, "\n- **Remaining:** {remaining} milestones pending");
-    entry
+    let sg = o.in_progress_subgoal.as_deref().unwrap_or("(no subgoal)");
+    let refl = match reflection {
+        Some(r) if !r.is_empty() => format!(" — {r}"),
+        _ => String::new(),
+    };
+    let satisfied = if o.satisfied.is_empty() { "none".to_string() } else { o.satisfied.join(", ") };
+    let gate_seg = match gate {
+        Some(g) if !g.is_empty() => format!("; {g}"),
+        _ => String::new(),
+    };
+    let fail_seg = if o.overall_pass {
+        String::new()
+    } else {
+        let reason = o.failed.iter().chain(&o.unverified).cloned().collect::<Vec<_>>().join(", ");
+        format!("; FAIL: {reason}")
+    };
+    format!("- **{closing}** · {date} · {commit}{sg}{refl} → {satisfied} satisfied{gate_seg}{fail_seg}")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::state::{
-        ChecklistItem, CurrentAction, Phase, ReqStatus, Subgoal, Tier, VerifyResult,
+        ChecklistItem, CurrentAction, Phase, ReqStatus, ReqType, Subgoal, Tier, VerifyResult,
     };
     use tempfile::TempDir;
 
@@ -334,7 +328,7 @@ mod tests {
             result("ISC-X2", VerifyStatus::Pass),
         ];
         let dir = save(&st);
-        let out = run(dir.path(), None).unwrap();
+        let out = run(dir.path(), Some("done"), None).unwrap();
         assert!(out.contains("overall: PASS"));
         assert!(out.contains("subgoal SG-1 complete"));
         let after = state::load(dir.path()).unwrap();
@@ -359,7 +353,7 @@ mod tests {
             result("ISC-X2", VerifyStatus::Fail),
         ];
         let dir = save(&st);
-        let out = run(dir.path(), None).unwrap();
+        let out = run(dir.path(), None, None).unwrap();
         assert!(out.contains("overall: FAIL"));
         assert!(out.contains("subgoal SG-1 still in_progress"));
         let after = state::load(dir.path()).unwrap();
@@ -381,7 +375,7 @@ mod tests {
         let mut st = mid_iteration_state();
         st.verify_results = vec![result("ISC-X1", VerifyStatus::Pass)]; // ISC-X2 never verified
         let dir = save(&st);
-        let out = run(dir.path(), None).unwrap();
+        let out = run(dir.path(), None, None).unwrap();
         assert!(out.contains("overall: FAIL"));
         assert!(out.contains("no verify result for ISC-X2"));
         let after = state::load(dir.path()).unwrap();
@@ -397,7 +391,7 @@ mod tests {
         st.stall_count = 2;
         st.verify_results = vec![result("ISC-X1", VerifyStatus::Fail)];
         let dir = save(&st);
-        let out = run(dir.path(), None).unwrap();
+        let out = run(dir.path(), None, None).unwrap();
         assert!(out.contains("stall_count: 3"));
         assert!(out.contains("stop and ask the user"));
     }
@@ -405,28 +399,34 @@ mod tests {
     #[test]
     fn no_current_action_errors() {
         let dir = save(&State::new("PRD-test.md"));
-        let err = run(dir.path(), None).unwrap_err();
+        let err = run(dir.path(), None, None).unwrap_err();
         assert!(err.to_string().contains("no current_action"));
     }
 
+    // ISC-LOG-1/2: end-to-end, the appended entry is one bullet after the last
+    // existing entry — no `### Iteration` heading, no Artifacts/Tier/etc bullets.
     #[test]
-    fn log_entry_appends_last_with_reflection() {
+    fn end_iteration_appends_one_bullet_after_last_entry() {
         let mut st = mid_iteration_state();
         st.verify_results = vec![
             result("ISC-X1", VerifyStatus::Pass),
             result("ISC-X2", VerifyStatus::Pass),
         ];
         let dir = save(&st);
-        run(dir.path(), Some("learned a thing")).unwrap();
+        run(dir.path(), Some("learned a thing"), Some("cargo test ok")).unwrap();
         let prd = prd(&dir);
         let it2 = prd.find("### Iteration 2").unwrap();
-        let it5 = prd.find("### Iteration 5").unwrap(); // closing iteration = 4 + 1
-        assert!(it5 > it2, "new entry must follow the last existing one");
-        assert!(prd.contains("- **Start commit:** `abc1234`"));
-        assert!(prd.contains("- **Artifacts:** `src/x.rs` (tier: standard)"));
-        assert!(prd.contains("- **Milestones addressed:** ISC-X1, ISC-X2"));
-        assert!(prd.contains("- **Reflection:** learned a thing"));
-        assert!(prd.contains("- **Remaining:** 0 milestones pending"));
+        let bullet = prd.find("- **5**").unwrap(); // closing iteration = 4 + 1
+        assert!(bullet > it2, "new entry must follow the last existing one");
+        assert!(prd.contains(
+            "- **5** · "
+        ));
+        assert!(prd.contains(
+            "`abc1234` · SG-1 — learned a thing → ISC-X1, ISC-X2 satisfied; cargo test ok"
+        ));
+        assert!(!prd.contains("### Iteration 5"), "no per-iteration heading");
+        assert!(!prd.contains("- **Artifacts:**"));
+        assert!(!prd.contains("- **Remaining:**"));
     }
 
     #[test]
@@ -437,7 +437,7 @@ mod tests {
             result("ISC-X2", VerifyStatus::Pass),
         ];
         let dir = save(&st);
-        let out = run(dir.path(), None).unwrap();
+        let out = run(dir.path(), Some("done"), None).unwrap();
         let prd = prd(&dir);
         // ISC-E5
         assert!(prd.contains("verification_summary: \"Iteration 5: 2/2 PASS (ISC-X1, ISC-X2)\""));
@@ -459,9 +459,123 @@ mod tests {
             result("ISC-X2", VerifyStatus::Pass),
         ];
         let dir = save(&st);
-        run(dir.path(), None).unwrap();
+        run(dir.path(), Some("done"), None).unwrap();
         let prd = prd(&dir);
         assert!(prd.contains("status: ACTIVE"));
-        assert!(prd.contains("- **Remaining:** 1 milestones pending"));
+    }
+
+    // ---- one-bullet grammar (pure log_entry) ----
+
+    fn state_with_commit(commit: Option<&str>) -> State {
+        let mut st = State::new("PRD.md");
+        st.start_commit = commit.map(str::to_string);
+        st
+    }
+
+    fn pass_outcome(sg: &str, satisfied: &[&str]) -> IterationOutcome {
+        IterationOutcome {
+            overall_pass: true,
+            satisfied: satisfied.iter().map(|s| (*s).to_string()).collect(),
+            failed: vec![],
+            unverified: vec![],
+            next_stall_count: 0,
+            in_progress_subgoal: Some(sg.to_string()),
+            subgoal_complete: true,
+        }
+    }
+
+    // ISC-LOG-1/2/3/4: full bullet, PASS with commit + reflection + gate.
+    #[test]
+    fn log_entry_pass_full_bullet() {
+        let st = state_with_commit(Some("a1b2c3d"));
+        let o = pass_outcome("SG-2", &["ISC-2", "ISC-3"]);
+        let s = log_entry(&st, &o, Some("sum path is the seam"), Some("RED 1→GREEN 7, cargo test ok"), 7, "2026-07-03");
+        assert_eq!(
+            s,
+            "- **7** · 2026-07-03 · `a1b2c3d` · SG-2 — sum path is the seam → ISC-2, ISC-3 satisfied; RED 1→GREEN 7, cargo test ok"
+        );
+        assert!(!s.contains("### Iteration"));
+        assert!(!s.contains('\n'), "one-bullet entry is a single line");
+    }
+
+    // ISC-LOG-2: start_commit is none -> no backticked hash on a PASS bullet.
+    #[test]
+    fn log_entry_pass_without_commit_omits_hash() {
+        let st = state_with_commit(None);
+        let o = pass_outcome("SG-1", &["ISC-1"]);
+        let s = log_entry(&st, &o, Some("note"), None, 3, "2026-07-03");
+        assert_eq!(s, "- **3** · 2026-07-03 · SG-1 — note → ISC-1 satisfied");
+    }
+
+    // ISC-LOG-5 (render half): empty reflection collapses the `— … ` segment.
+    #[test]
+    fn log_entry_empty_reflection_collapses_segment() {
+        let st = state_with_commit(Some("abc1234"));
+        let o = pass_outcome("SG-1", &["ISC-1"]);
+        let s = log_entry(&st, &o, Some(""), None, 4, "2026-07-03");
+        assert_eq!(s, "- **4** · 2026-07-03 · `abc1234` · SG-1 → ISC-1 satisfied");
+    }
+
+    // ISC-LOG-2/3: FAIL omits the commit hash and appends failed + unverified ids.
+    #[test]
+    fn log_entry_fail_omits_hash_and_lists_failures() {
+        let st = state_with_commit(Some("abc1234")); // present, but FAIL -> omitted
+        let o = IterationOutcome {
+            overall_pass: false,
+            satisfied: vec!["ISC-1".into()],
+            failed: vec!["ISC-2".into()],
+            unverified: vec!["ISC-3".into()],
+            next_stall_count: 1,
+            in_progress_subgoal: Some("SG-3".into()),
+            subgoal_complete: false,
+        };
+        let s = log_entry(&st, &o, None, Some("RED 2→GREEN 1"), 5, "2026-07-03");
+        assert_eq!(
+            s,
+            "- **5** · 2026-07-03 · SG-3 → ISC-1 satisfied; RED 2→GREEN 1; FAIL: ISC-2, ISC-3"
+        );
+    }
+
+    // ISC-LOG-4: no gate flag -> no `; ` gate segment.
+    #[test]
+    fn log_entry_no_gate_has_no_gate_segment() {
+        let st = state_with_commit(None);
+        let o = pass_outcome("SG-1", &["ISC-1"]);
+        let s = log_entry(&st, &o, Some("n"), None, 2, "2026-07-03");
+        assert_eq!(s, "- **2** · 2026-07-03 · SG-1 — n → ISC-1 satisfied");
+    }
+
+    // ---- reflection-required contract (ISC-LOG-5) ----
+
+    #[test]
+    fn pass_without_reflection_errors_and_writes_nothing() {
+        let mut st = mid_iteration_state();
+        st.verify_results = vec![
+            result("ISC-X1", VerifyStatus::Pass),
+            result("ISC-X2", VerifyStatus::Pass),
+        ];
+        let dir = save(&st);
+        let before = prd(&dir);
+        let err = run(dir.path(), None, None).unwrap_err();
+        assert!(err.to_string().contains("--reflection is required"));
+        assert_eq!(prd(&dir), before, "PRD must be untouched");
+        let after = state::load(dir.path()).unwrap();
+        assert_eq!(after.iteration, 4, "iteration must not advance");
+        assert_eq!(after.subgoals[0].status, SubgoalStatus::InProgress);
+        assert_eq!(req_status(&after, "ISC-X1"), ReqStatus::Active);
+    }
+
+    #[test]
+    fn pass_with_empty_reflection_is_accepted() {
+        let mut st = mid_iteration_state();
+        st.verify_results = vec![
+            result("ISC-X1", VerifyStatus::Pass),
+            result("ISC-X2", VerifyStatus::Pass),
+        ];
+        let dir = save(&st);
+        run(dir.path(), Some(""), None).unwrap();
+        let prd = prd(&dir);
+        assert!(prd.contains("→ ISC-X1, ISC-X2 satisfied"));
+        assert!(!prd.contains("SG-1 — "), "empty reflection collapses the dash segment");
     }
 }

@@ -4,7 +4,7 @@ status: ACTIVE
 created: 2026-07-03
 updated: 2026-07-03
 labels: [ready-for-agent]
-verification_summary: "Iteration 1: 1/1 PASS (ISC-LOG-6)"
+verification_summary: "Iteration 2: 5/5 PASS (ISC-LOG-1, ISC-LOG-2, ISC-LOG-3, ISC-LOG-4, ISC-LOG-5)"
 failing_criteria: none
 last_phase: UPDATE
 ---
@@ -72,14 +72,14 @@ FAIL (no commit hash, no reflection):
 
 ### Grammar
 
-- [ ] ISC-LOG-1: end-iteration writes each LOG entry as one `- **N** · date · SG — reflection → status` bullet and no longer adds the `### Iteration N` heading or the Artifacts/Tier/Invariants/Remaining bullets | Verify: Test: fixture run adds a single `- **` line and no `### Iteration` heading
-- [ ] ISC-LOG-2: On a PASS iteration the bullet renders the start_commit in backticks, omitting it when start_commit is none; on a FAIL iteration the commit hash is omitted | Verify: Test: pass-with-commit, pass-without-commit, and fail fixtures
-- [ ] ISC-LOG-3: The bullet renders passed milestones as `<ids> satisfied` and on FAIL appends `; FAIL: <failed and unverified ids>` | Verify: Test: all-pass and mixed-fail fixtures
-- [ ] ISC-LOG-4: end-iteration --gate text renders `; text` after the milestone status, and no gate segment when the flag is absent | Verify: Test: run with and without --gate
+- [x] ISC-LOG-1: end-iteration writes each LOG entry as one `- **N** · date · SG — reflection → status` bullet and no longer adds the `### Iteration N` heading or the Artifacts/Tier/Invariants/Remaining bullets | Verify: Test: fixture run adds a single `- **` line and no `### Iteration` heading
+- [x] ISC-LOG-2: On a PASS iteration the bullet renders the start_commit in backticks, omitting it when start_commit is none; on a FAIL iteration the commit hash is omitted | Verify: Test: pass-with-commit, pass-without-commit, and fail fixtures
+- [x] ISC-LOG-3: The bullet renders passed milestones as `<ids> satisfied` and on FAIL appends `; FAIL: <failed and unverified ids>` | Verify: Test: all-pass and mixed-fail fixtures
+- [x] ISC-LOG-4: end-iteration --gate text renders `; text` after the milestone status, and no gate segment when the flag is absent | Verify: Test: run with and without --gate
 
 ### Contract
 
-- [ ] ISC-LOG-5: end-iteration on a PASS iteration errors when --reflection is absent, writing neither state nor PRD; --reflection with an empty string is accepted and collapses the sentence segment | Verify: Test: PASS without reflection errors and leaves files unchanged, PASS with empty string writes an empty sentence
+- [x] ISC-LOG-5: end-iteration on a PASS iteration errors when --reflection is absent, writing neither state nor PRD; --reflection with an empty string is accepted and collapses the sentence segment | Verify: Test: PASS without reflection errors and leaves files unchanged, PASS with empty string writes an empty sentence
 - [x] ISC-LOG-6: append_log appends the new bullet after the last existing entry using a single newline so entries form a tight list | Verify: Test: two existing bullets produce a contiguous third at the tail
 
 ### Docs
@@ -109,3 +109,11 @@ FAIL (no commit hash, no reflection):
 - **Overall:** PASS
 - **Reflection:** prd-state on PATH stays block-format until 'cargo install --path .'; rebuild after SG-2 lands or later iterations won't dogfood one-bullet output.
 - **Remaining:** 7 milestones pending
+### Iteration 2 — 2026-07-03
+- **Start commit:** `f762ad9`
+- **Artifacts:** `src/end_iteration.rs`, `src/main.rs` (tier: complex)
+- **Milestones addressed:** ISC-LOG-1, ISC-LOG-2, ISC-LOG-3, ISC-LOG-4, ISC-LOG-5
+- **Invariants verified:** all PASS
+- **Overall:** PASS
+- **Reflection:** SG-3 ADR (ISC-LOG-7) must record the start_commit caveat: it is the OBSERVE HEAD (parent of the iteration's own commit), rendered on PASS only; the real iteration commit is found later via git log.
+- **Remaining:** 2 milestones pending

@@ -52,9 +52,12 @@ enum Cmd {
     Sync,
     /// Close out the iteration: registry, subgoal, stall, PRD writes, field reset
     EndIteration {
-        /// Reflection text for the LOG entry
+        /// Reflection text for the LOG entry (required on a PASS iteration)
         #[arg(long)]
         reflection: Option<String>,
+        /// Free-text test-gate note (e.g. "RED 2→GREEN 7") appended to the bullet
+        #[arg(long)]
+        gate: Option<String>,
     },
     /// Record a verify result with its evidence
     Verify {
@@ -150,8 +153,8 @@ fn main() -> Result<()> {
                 println!("{}", subgoal::remove(&cli.dir, &id)?);
             }
         },
-        Cmd::EndIteration { reflection } => {
-            println!("{}", end_iteration::run(&cli.dir, reflection.as_deref())?);
+        Cmd::EndIteration { reflection, gate } => {
+            println!("{}", end_iteration::run(&cli.dir, reflection.as_deref(), gate.as_deref())?);
         }
         Cmd::Verify { id, status, evidence } => {
             println!("{}", verify::run(&cli.dir, &id, status, &evidence)?);
