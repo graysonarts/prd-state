@@ -41,3 +41,6 @@ A cited proof for one verify result — quoted line, search result, or code path
 
 **Stall**:
 A failed VERIFY. `stall_count` reaching 3 halts the loop for user guidance. Derived from verify results; there is no `verify_status` field.
+
+**LOG**:
+The PRD's append-only `## LOG` section. One dense bullet per iteration (`- **N** · date · SG — reflection → ids satisfied`), written by `end-iteration`; dropped fields (artifacts, tier, remaining) stay recoverable from State and git. See [ADR 0001](docs/adr/0001-log-one-bullet.md).

@@ -1,10 +1,10 @@
 ---
 title: prd-state LOG one-bullet format
-status: ACTIVE
+status: COMPLETE
 created: 2026-07-03
 updated: 2026-07-03
 labels: [ready-for-agent]
-verification_summary: "Iteration 2: 5/5 PASS (ISC-LOG-1, ISC-LOG-2, ISC-LOG-3, ISC-LOG-4, ISC-LOG-5)"
+verification_summary: "Iteration 3: 2/2 PASS (ISC-LOG-7, ISC-LOG-8)"
 failing_criteria: none
 last_phase: UPDATE
 ---
@@ -84,8 +84,8 @@ FAIL (no commit hash, no reflection):
 
 ### Docs
 
-- [ ] ISC-LOG-7: An ADR under docs/adr/ records the block-to-one-bullet change, the start_commit-not-iteration-commit caveat, and the authored-prose trade-off | Verify: Read: ADR states the decision and the caveat
-- [ ] ISC-LOG-8: CONTEXT.md notes that the LOG grammar is one bullet per iteration | Verify: Grep: CONTEXT.md contains the LOG-grammar line
+- [x] ISC-LOG-7: An ADR under docs/adr/ records the block-to-one-bullet change, the start_commit-not-iteration-commit caveat, and the authored-prose trade-off | Verify: Read: ADR states the decision and the caveat
+- [x] ISC-LOG-8: CONTEXT.md notes that the LOG grammar is one bullet per iteration | Verify: Grep: CONTEXT.md contains the LOG-grammar line
 
 ## Out of Scope
 
@@ -117,3 +117,4 @@ FAIL (no commit hash, no reflection):
 - **Overall:** PASS
 - **Reflection:** SG-3 ADR (ISC-LOG-7) must record the start_commit caveat: it is the OBSERVE HEAD (parent of the iteration's own commit), rendered on PASS only; the real iteration commit is found later via git log.
 - **Remaining:** 2 milestones pending
+- **3** · 2026-07-03 · `43eeebe` · SG-3 — PRD complete; dogfood confirmed — this is the first one-bullet LOG line. Full grammar and rationale in ADR 0001. → ISC-LOG-7, ISC-LOG-8 satisfied
