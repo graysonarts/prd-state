@@ -64,8 +64,9 @@ pub fn flip_checkboxes(prd: &str, ids: &[String]) -> String {
 
 /// Append a LOG entry at the true end of the file — LOG entries are always
 /// the file's tail, so end-of-file append can never reverse their order.
+/// Joins with a single newline: one-bullet entries form a tight list.
 pub fn append_log(prd: &str, entry: &str) -> String {
-    format!("{}\n\n{}\n", prd.trim_end(), entry.trim_end())
+    format!("{}\n{}\n", prd.trim_end(), entry.trim_end())
 }
 
 /// Replace `key: value` lines inside the leading `---` frontmatter block.
@@ -140,6 +141,19 @@ mod tests {
         let it3 = out.find("### Iteration 3").unwrap();
         assert!(it3 > it2, "new entry must follow the last existing one");
         assert!(out.ends_with("- **Overall:** FAIL\n"));
+    }
+
+    // ISC-LOG-6: bullet-list LOG joins tight (single newline), no blank line between entries.
+    #[test]
+    fn append_log_tight_joins_bullets_with_single_newline() {
+        let prd = "# PRD\n\n## LOG\n- **1** · 2026-01-01 · SG-1 — a → ISC-1 satisfied\n- **2** · 2026-01-02 · SG-2 — b → ISC-2 satisfied\n";
+        let out = append_log(prd, "- **3** · 2026-01-03 · SG-3 — c → ISC-3 satisfied");
+        assert!(
+            out.contains("→ ISC-2 satisfied\n- **3** · 2026-01-03"),
+            "third bullet must be contiguous with the second: {out:?}"
+        );
+        assert!(!out.contains("satisfied\n\n- **3**"), "no blank line between bullets");
+        assert!(out.ends_with("→ ISC-3 satisfied\n"));
     }
 
     #[test]
