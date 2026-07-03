@@ -82,7 +82,10 @@ pub fn outcome(st: &State) -> Result<IterationOutcome> {
 pub fn run(dir: &Path, reflection: Option<&str>) -> Result<String> {
     let mut st = state::load(dir)?;
     let o = outcome(&st)?;
-    let action = st.current_action.clone().expect("outcome checked current_action");
+    let action = st
+        .current_action
+        .clone()
+        .context("no current_action; nothing to end (run `decide` first)")?;
 
     let mut out = format!("overall: {}", if o.overall_pass { "PASS" } else { "FAIL" });
     if !o.failed.is_empty() {
@@ -99,7 +102,11 @@ pub fn run(dir: &Path, reflection: Option<&str>) -> Result<String> {
 
     if let Some(sg_id) = &o.in_progress_subgoal {
         if o.subgoal_complete {
-            let sg = st.subgoals.iter_mut().find(|sg| sg.id == *sg_id).expect("outcome found it");
+            let sg = st
+                .subgoals
+                .iter_mut()
+                .find(|sg| sg.id == *sg_id)
+                .context("in-progress subgoal vanished from state during end-iteration")?;
             sg.status = SubgoalStatus::Complete;
             let _ = write!(out, "\nsubgoal {sg_id} complete");
         } else {

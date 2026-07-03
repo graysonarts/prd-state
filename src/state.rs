@@ -138,6 +138,19 @@ pub struct Requirement {
     pub text: String,
 }
 
+impl Requirement {
+    /// Milestones start active; invariants carry no status. The one place the
+    /// status-init rule lives, so `add` and `upsert` cannot drift.
+    fn new(id: &str, req_type: ReqType, text: &str) -> Self {
+        Requirement {
+            id: id.to_string(),
+            req_type,
+            status: matches!(req_type, ReqType::Milestone).then_some(ReqStatus::Active),
+            text: text.to_string(),
+        }
+    }
+}
+
 /// The requirement registry. The vec is private: reads go through Deref,
 /// every mutation through a method, so the Milestone/Invariant status rule
 /// holds by construction.
@@ -177,12 +190,7 @@ impl Registry {
         if self.find(id).is_some() {
             bail!("requirement {id} already registered");
         }
-        self.0.push(Requirement {
-            id: id.to_string(),
-            req_type,
-            status: matches!(req_type, ReqType::Milestone).then_some(ReqStatus::Active),
-            text: text.to_string(),
-        });
+        self.0.push(Requirement::new(id, req_type, text));
         Ok(())
     }
 
@@ -237,7 +245,7 @@ impl Registry {
         for p in parsed {
             match self.0.iter_mut().find(|r| r.id == p.id) {
                 None => {
-                    self.add(&p.id, p.req_type, &p.text).expect("id checked absent");
+                    self.0.push(Requirement::new(&p.id, p.req_type, &p.text));
                     match p.req_type {
                         ReqType::Invariant => report.added_invariants += 1,
                         ReqType::Milestone => report.added_milestones += 1,

@@ -25,23 +25,26 @@ pub fn run(dir: &Path, sg_id: &str) -> Result<String> {
     };
     let milestones = sg.milestones.clone();
 
-    let mut checklist: Vec<ChecklistItem> = st
-        .requirements
-        .invariants()
-        .map(|r| ChecklistItem { id: r.id.clone(), req_type: ReqType::Invariant })
-        .collect();
+    // Build the checklist and its printed rows together, so the pre-flight text
+    // comes from the requirement in hand — no second lookup that could miss.
+    let mut checklist: Vec<ChecklistItem> = Vec::new();
+    let mut rows: Vec<(String, String)> = Vec::new();
+    for r in st.requirements.invariants() {
+        checklist.push(ChecklistItem { id: r.id.clone(), req_type: ReqType::Invariant });
+        rows.push((r.id.clone(), r.text.clone()));
+    }
     for m in &milestones {
-        if st.requirements.find(m).is_none() {
+        let Some(req) = st.requirements.find(m) else {
             bail!("milestone {m} not in registry; run `sync` or `req add` first");
-        }
+        };
         checklist.push(ChecklistItem { id: m.clone(), req_type: ReqType::Milestone });
+        rows.push((req.id.clone(), req.text.clone()));
     }
 
     let mut out = format!("PRE-FLIGHT for {}", action.artifacts.join(", "));
-    let width = checklist.iter().map(|c| c.id.len()).max().unwrap_or(0);
-    for item in &checklist {
-        let text = &st.requirements.find(&item.id).unwrap().text;
-        let _ = write!(out, "\n  {:width$}  {}", item.id, text);
+    let width = rows.iter().map(|(id, _)| id.len()).max().unwrap_or(0);
+    for (id, text) in &rows {
+        let _ = write!(out, "\n  {id:width$}  {text}");
     }
 
     st.current_action = Some(action);

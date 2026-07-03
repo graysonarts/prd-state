@@ -97,7 +97,7 @@ FAIL (no commit hash, no reflection):
 
 - Dogfood: early iterations of this PRD close out in the current block format; once ISC-LOG-1 lands, remaining iterations log as one bullet — the same self-hosting pattern as the original PRD (Iteration 9 built `end-iteration`, Iteration 10 used it).
 - ISC-LOG-5 changes the loop's own contract: after it lands, every PASS `end-iteration` MUST pass `--reflection`. The skill's UPDATE step (out-of-scope re-sync) depends on this.
-- No `docs/invariant_requirements.md` exists in this repo; `sync` loads 0 invariants and the loop runs on ISC milestones only, as with the original PRD.
+- `docs/invariant_requirements.md` defines 8 invariants (INV-RUST1-4, INV-DOC1, INV-ARCH1-3); `sync` loads them into every pre-flight from iteration 2 on. Iteration 1 (SG-1) closed before the doc existed, so it ran on ISC milestones only.
 
 ## LOG
 
