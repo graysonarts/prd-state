@@ -293,7 +293,7 @@ impl fmt::Display for SyncReport {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct State {
     pub iteration: u32,
@@ -310,18 +310,32 @@ pub struct State {
 
 impl State {
     pub fn new(prd_filename: &str) -> Self {
-        State {
-            iteration: 0,
-            current_phase: None,
-            start_commit: None,
-            prd_path: prd_filename.to_string(),
-            current_action: None,
-            pre_flight_checklist: Vec::new(),
-            verify_results: Vec::new(),
-            stall_count: 0,
-            subgoals: Vec::new(),
-            requirements: Registry::default(),
-        }
+        State { prd_path: prd_filename.to_string(), ..Default::default() }
+    }
+
+    /// The load-modify-save transaction for `state.json`: `save` runs only when
+    /// the closure returns `Ok`, so a closure `Err` leaves the file untouched.
+    pub fn update(dir: &Path, f: impl FnOnce(&mut State) -> Result<String>) -> Result<String> {
+        let mut st = load(dir)?;
+        let msg = f(&mut st)?; // Err ⇒ return early, no save
+        save(dir, &st)?;
+        Ok(msg)
+    }
+
+    /// Cross the iteration boundary: bump the counter, drop the transients.
+    pub fn begin_next_iteration(&mut self) {
+        self.iteration += 1;
+        self.clear_transients();
+    }
+
+    /// The one definition of "transient". `new` (via `Default`) and
+    /// `begin_next_iteration` are the only routes to this set, so it cannot drift.
+    fn clear_transients(&mut self) {
+        self.current_phase = None;
+        self.start_commit = None;
+        self.current_action = None;
+        self.pre_flight_checklist.clear();
+        self.verify_results.clear();
     }
 }
 
@@ -488,6 +502,85 @@ mod tests {
         .unwrap();
         let err = format!("{:#}", load(dir.path()).unwrap_err());
         assert!(err.contains("ISC-A1 must carry a status"), "error was: {err}");
+    }
+
+    #[test]
+    fn update_persists_on_ok() {
+        let dir = TempDir::new().unwrap();
+        save(dir.path(), &State::new("p.md")).unwrap();
+        let msg = State::update(dir.path(), |st| {
+            st.iteration = 42;
+            Ok("bumped".to_string())
+        })
+        .unwrap();
+        assert_eq!(msg, "bumped");
+        assert_eq!(load(dir.path()).unwrap().iteration, 42);
+    }
+
+    #[test]
+    fn update_rolls_back_on_err() {
+        let dir = TempDir::new().unwrap();
+        let mut st = State::new("p.md");
+        st.iteration = 7;
+        save(dir.path(), &st).unwrap();
+        let before = fs::read_to_string(dir.path().join("state.json")).unwrap();
+        let err = State::update(dir.path(), |st| {
+            st.iteration = 999; // mutated in memory only
+            anyhow::bail!("closure failed")
+        })
+        .unwrap_err();
+        assert!(err.to_string().contains("closure failed"));
+        let after = fs::read_to_string(dir.path().join("state.json")).unwrap();
+        assert_eq!(before, after, "state.json byte-for-byte unchanged on Err");
+        assert_eq!(load(dir.path()).unwrap().iteration, 7);
+    }
+
+    #[test]
+    fn begin_next_iteration_clears_transients_preserves_rest() {
+        let mut st = State::new("keep.md");
+        st.iteration = 3;
+        st.current_phase = Some(Phase::Verify);
+        st.start_commit = Some("abc1234".into());
+        st.current_action = Some(CurrentAction {
+            artifacts: vec!["x".into()],
+            tier: Tier::Standard,
+            description: "d".into(),
+            applicable_milestones: vec![],
+        });
+        st.pre_flight_checklist = vec![ChecklistItem {
+            id: "INV-A".into(),
+            req_type: ReqType::Invariant,
+        }];
+        st.verify_results = vec![VerifyResult {
+            id: "ISC-A".into(),
+            status: VerifyStatus::Pass,
+            evidence: "e".into(),
+        }];
+        st.stall_count = 2;
+        st.subgoals.push(Subgoal {
+            id: "SG-1".into(),
+            artifacts: vec!["a".into()],
+            tier: Tier::Trivial,
+            description: "s".into(),
+            milestones: vec![],
+            status: SubgoalStatus::Pending,
+        });
+        st.requirements.add("ISC-A", ReqType::Milestone, "a").unwrap();
+
+        st.begin_next_iteration();
+
+        // iteration increments; the five transient fields clear.
+        assert_eq!(st.iteration, 4);
+        assert_eq!(st.current_phase, None);
+        assert_eq!(st.start_commit, None);
+        assert!(st.current_action.is_none());
+        assert!(st.pre_flight_checklist.is_empty());
+        assert!(st.verify_results.is_empty());
+        // everything else persists across the boundary.
+        assert_eq!(st.prd_path, "keep.md");
+        assert_eq!(st.stall_count, 2);
+        assert_eq!(st.subgoals.len(), 1);
+        assert_eq!(st.requirements.len(), 1);
     }
 
     #[test]

@@ -2,7 +2,9 @@
 //! stall handling, PRD markdown writes, and transient-field reset.
 
 use crate::prd_md;
-use crate::state::{self, State, SubgoalStatus, VerifyStatus};
+use crate::state::{State, SubgoalStatus, VerifyStatus};
+#[cfg(test)]
+use crate::state; // test module reaches state::load/save through this alias
 use anyhow::{bail, Context, Result};
 use std::fmt::Write as _;
 use std::fs;
@@ -80,100 +82,98 @@ pub fn outcome(st: &State) -> Result<IterationOutcome> {
 /// Apply the outcome: registry and subgoal bookkeeping, PRD writes,
 /// transient-field reset. Thin I/O shell around `outcome`.
 pub fn run(dir: &Path, reflection: Option<&str>, gate: Option<&str>) -> Result<String> {
-    let mut st = state::load(dir)?;
-    let o = outcome(&st)?;
-    let action = st
-        .current_action
-        .clone()
-        .context("no current_action; nothing to end (run `decide` first)")?;
+    State::update(dir, |st| {
+        let o = outcome(st)?;
+        let action = st
+            .current_action
+            .clone()
+            .context("no current_action; nothing to end (run `decide` first)")?;
 
-    // A PASS iteration must record its load-bearing insight; bail before any
-    // state or PRD write so a missing reflection never half-closes the loop.
-    if o.overall_pass && reflection.is_none() {
-        bail!("--reflection is required on a PASS iteration (use --reflection \"\" for no note)");
-    }
-
-    let mut out = format!("overall: {}", if o.overall_pass { "PASS" } else { "FAIL" });
-    if !o.failed.is_empty() {
-        let _ = write!(out, " (FAIL: {})", o.failed.join(", "));
-    }
-    if !o.unverified.is_empty() {
-        let _ = write!(out, " (no verify result for {})", o.unverified.join(", "));
-    }
-
-    for id in &o.satisfied {
-        st.requirements.mark_satisfied(id)?;
-    }
-    let _ = write!(out, "\nsatisfied: {}", if o.satisfied.is_empty() { "none".into() } else { o.satisfied.join(", ") });
-
-    if let Some(sg_id) = &o.in_progress_subgoal {
-        if o.subgoal_complete {
-            let sg = st
-                .subgoals
-                .iter_mut()
-                .find(|sg| sg.id == *sg_id)
-                .context("in-progress subgoal vanished from state during end-iteration")?;
-            sg.status = SubgoalStatus::Complete;
-            let _ = write!(out, "\nsubgoal {sg_id} complete");
-        } else {
-            let _ = write!(out, "\nsubgoal {sg_id} still in_progress");
+        // A PASS iteration must record its load-bearing insight; bail before any
+        // state or PRD write so a missing reflection never half-closes the loop.
+        // Bailing here returns the closure Err, so `update` skips the save too.
+        if o.overall_pass && reflection.is_none() {
+            bail!("--reflection is required on a PASS iteration (use --reflection \"\" for no note)");
         }
-    }
 
-    st.stall_count = o.next_stall_count;
-    let _ = write!(out, "\nstall_count: {}", st.stall_count);
-    if st.stall_count >= STALL_LIMIT {
-        out.push_str("\nWARNING: 3 consecutive failed iterations — stop and ask the user for guidance");
-    }
+        let mut out = format!("overall: {}", if o.overall_pass { "PASS" } else { "FAIL" });
+        if !o.failed.is_empty() {
+            let _ = write!(out, " (FAIL: {})", o.failed.join(", "));
+        }
+        if !o.unverified.is_empty() {
+            let _ = write!(out, " (no verify result for {})", o.unverified.join(", "));
+        }
 
-    // PRD writes: checkbox flips, frontmatter, LOG append — one atomic save.
-    let remaining = st.requirements.pending_milestones();
-    let date = today();
-    let closing = st.iteration + 1;
-    let prd_path = dir.join(&st.prd_path);
-    let mut prd = fs::read_to_string(&prd_path)
-        .with_context(|| format!("cannot read PRD {}", prd_path.display()))?;
-    prd = prd_md::flip_checkboxes(&prd, &o.satisfied);
+        for id in &o.satisfied {
+            st.requirements.mark_satisfied(id)?;
+        }
+        let _ = write!(out, "\nsatisfied: {}", if o.satisfied.is_empty() { "none".into() } else { o.satisfied.join(", ") });
 
-    let mut failing = o.failed.clone();
-    failing.extend(o.unverified.iter().map(|m| format!("{m} (unverified)")));
-    let mut updates = vec![
-        (
-            "verification_summary",
-            format!(
-                "\"Iteration {closing}: {}/{} PASS ({})\"",
-                o.satisfied.len(),
-                action.applicable_milestones.len(),
-                if o.satisfied.is_empty() { "none".into() } else { o.satisfied.join(", ") }
+        if let Some(sg_id) = &o.in_progress_subgoal {
+            if o.subgoal_complete {
+                let sg = st
+                    .subgoals
+                    .iter_mut()
+                    .find(|sg| sg.id == *sg_id)
+                    .context("in-progress subgoal vanished from state during end-iteration")?;
+                sg.status = SubgoalStatus::Complete;
+                let _ = write!(out, "\nsubgoal {sg_id} complete");
+            } else {
+                let _ = write!(out, "\nsubgoal {sg_id} still in_progress");
+            }
+        }
+
+        st.stall_count = o.next_stall_count;
+        let _ = write!(out, "\nstall_count: {}", st.stall_count);
+        if st.stall_count >= STALL_LIMIT {
+            out.push_str("\nWARNING: 3 consecutive failed iterations — stop and ask the user for guidance");
+        }
+
+        // PRD writes: checkbox flips, frontmatter, LOG append. This side effect
+        // stays inside the closure, before the field reset; `update` saves
+        // state.json after, preserving today's PRD-first, non-atomic ordering.
+        let remaining = st.requirements.pending_milestones();
+        let date = today();
+        let closing = st.iteration + 1;
+        let prd_path = dir.join(&st.prd_path);
+        let mut prd = fs::read_to_string(&prd_path)
+            .with_context(|| format!("cannot read PRD {}", prd_path.display()))?;
+        prd = prd_md::flip_checkboxes(&prd, &o.satisfied);
+
+        let mut failing = o.failed.clone();
+        failing.extend(o.unverified.iter().map(|m| format!("{m} (unverified)")));
+        let mut updates = vec![
+            (
+                "verification_summary",
+                format!(
+                    "\"Iteration {closing}: {}/{} PASS ({})\"",
+                    o.satisfied.len(),
+                    action.applicable_milestones.len(),
+                    if o.satisfied.is_empty() { "none".into() } else { o.satisfied.join(", ") }
+                ),
             ),
-        ),
-        (
-            "failing_criteria",
-            if failing.is_empty() { "none".into() } else { failing.join(", ") },
-        ),
-        ("last_phase", "UPDATE".into()),
-        ("updated", date.clone()),
-    ];
-    if remaining == 0 {
-        updates.push(("status", "COMPLETE".into()));
-        out.push_str("\nPRD status: COMPLETE — all milestones satisfied");
-    }
-    prd = prd_md::update_frontmatter(&prd, &updates)?;
+            (
+                "failing_criteria",
+                if failing.is_empty() { "none".into() } else { failing.join(", ") },
+            ),
+            ("last_phase", "UPDATE".into()),
+            ("updated", date.clone()),
+        ];
+        if remaining == 0 {
+            updates.push(("status", "COMPLETE".into()));
+            out.push_str("\nPRD status: COMPLETE — all milestones satisfied");
+        }
+        prd = prd_md::update_frontmatter(&prd, &updates)?;
 
-    let entry = log_entry(&st, &o, reflection, gate, closing, &date);
-    prd = prd_md::append_log(&prd, &entry);
-    prd_md::save(&prd_path, &prd)?;
-    let _ = write!(out, "\nPRD updated: {}", st.prd_path);
+        let entry = log_entry(st, &o, reflection, gate, closing, &date);
+        prd = prd_md::append_log(&prd, &entry);
+        prd_md::save(&prd_path, &prd)?;
+        let _ = write!(out, "\nPRD updated: {}", st.prd_path);
 
-    st.iteration += 1;
-    st.current_phase = None;
-    st.start_commit = None;
-    st.current_action = None;
-    st.pre_flight_checklist.clear();
-    st.verify_results.clear();
-    state::save(dir, &st)?;
-    let _ = write!(out, "\niteration: {} (between iterations)", st.iteration);
-    Ok(out)
+        st.begin_next_iteration();
+        let _ = write!(out, "\niteration: {} (between iterations)", st.iteration);
+        Ok(out)
+    })
 }
 
 /// One dense bullet per iteration (grammar in the PRD).
