@@ -3,14 +3,15 @@
 //! Grammar lives in `prd_md`; the diff lives on `state::Registry`. This module is I/O glue.
 
 use crate::prd_md;
-use crate::state::{self, ReqType};
+use crate::state::{self, ReqType, State};
 use anyhow::{Context, Result};
 use std::fs;
 use std::path::Path;
 
 /// Load state, parse the invariant doc (if present) and the PRD, diff, save, report.
 pub fn run(dir: &Path, invariant_doc: Option<&Path>) -> Result<String> {
-    let mut st = state::load(dir)?;
+    // prd_path lives in state; this read-only load locates the PRD before parsing.
+    let prd_path = dir.join(state::load(dir)?.prd_path);
     let mut parsed = Vec::new();
     let mut doc_note = String::new();
     match invariant_doc {
@@ -26,7 +27,6 @@ pub fn run(dir: &Path, invariant_doc: Option<&Path>) -> Result<String> {
         }
         _ => doc_note = " (invariant doc not found; 0 invariants loaded)".to_string(),
     }
-    let prd_path = dir.join(&st.prd_path);
     let prd = fs::read_to_string(&prd_path)
         .with_context(|| format!("cannot read PRD {}", prd_path.display()))?;
     for p in prd_md::parse_requirements(&prd)
@@ -37,9 +37,10 @@ pub fn run(dir: &Path, invariant_doc: Option<&Path>) -> Result<String> {
             parsed.push(p);
         }
     }
-    let report = st.requirements.upsert_from_parsed(&parsed);
-    state::save(dir, &st)?;
-    Ok(format!("{report}{doc_note}"))
+    State::update(dir, |st| {
+        let report = st.requirements.upsert_from_parsed(&parsed);
+        Ok(format!("{report}{doc_note}"))
+    })
 }
 
 #[cfg(test)]

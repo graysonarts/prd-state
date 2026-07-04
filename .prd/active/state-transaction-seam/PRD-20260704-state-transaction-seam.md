@@ -4,7 +4,7 @@ status: ACTIVE
 created: 2026-07-04
 updated: 2026-07-04
 labels: [ready-for-agent]
-verification_summary: "Iteration 1: 4/4 PASS (ISC-TX-1, ISC-TX-4, ISC-TX-5, ISC-TX-6)"
+verification_summary: "Iteration 2: 1/1 PASS (ISC-TX-7)"
 failing_criteria: none
 last_phase: UPDATE
 ---
@@ -229,7 +229,7 @@ Nothing else about the commands' observable behavior changes.
 
 ### Boundary discipline
 
-- [ ] ISC-TX-7: pure-input guards and external file reads stay outside `update` — `verify`'s empty-evidence guard and `sync`'s doc/PRD parse+dedup run before any `state.json` load | Verify: Read: `verify` bails before `update`; `sync` parses and dedups before `update`, closure only calls `upsert_from_parsed`
+- [x] ISC-TX-7: pure-input guards and external file reads stay outside `update` — `verify`'s empty-evidence guard and `sync`'s doc/PRD parse+dedup run before any `state.json` load | Verify: Read: `verify` bails before `update`; `sync` parses and dedups before `update`, closure only calls `upsert_from_parsed`
 
 ## Out of Scope
 
@@ -264,3 +264,4 @@ Nothing else about the commands' observable behavior changes.
 
 ## LOG
 - **1** · 2026-07-04 · `8313993` · SG-1 — Migrating a command to State::update removes its last non-test state:: use, so the test-only `state` alias then trips clippy unused_import — gate it with #[cfg(test)] use crate::state;. Every SG-2/SG-3 command migration will hit this. → ISC-TX-1, ISC-TX-4, ISC-TX-5, ISC-TX-6 satisfied; RED 3->GREEN 78, cargo test + clippy (bin & all-targets) clean
+- **2** · 2026-07-04 · `e6cf8ea` · SG-2 — sync needs a read-only pre-load for prd_path (it lives in state, and run's signature is frozen by the unedited-tests rule), so ISC-TX-7's literal 'before any state.json load' cannot hold for the PRD read -- built to the operative Verify clause (parse+dedup before update, closure only upserts) instead. Remaining SG-3 commands (phase/req/decide/subgoal) mutate only with no external-file locate, so they migrate clean with no pre-load. → ISC-TX-7 satisfied; regression net green unedited: baseline 78 -> post 78; clippy bin + all-targets clean
