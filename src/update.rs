@@ -1,9 +1,5 @@
 //! Interactive update-check policy and the self-update I/O shell.
 
-// Nothing in `main` calls this module yet; until the update check is wired into
-// `main`, every item is unreachable in the bin build. Remove this when it is.
-#![allow(dead_code)]
-
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
