@@ -4,7 +4,7 @@ status: DRAFT
 created: 2026-07-04
 updated: 2026-07-04
 labels: [ready-for-agent]
-verification_summary: "Iteration 1: 1/1 PASS (ISC-REL-5)"
+verification_summary: "Iteration 2: 2/2 PASS (ISC-REL-4, ISC-REL-7)"
 failing_criteria: none
 last_phase: UPDATE
 ---
@@ -123,13 +123,13 @@ stdout.
 
 ### Self-update
 
-- [ ] ISC-REL-4: `prd-state self-update` uses the compiled crate version as "current", downloads the latest `aarch64-apple-darwin` GitHub release asset, replaces the running binary, and reports the new version or that it is already current | Verify: Read: updater built with `cargo_crate_version!()` and GitHub backend for `graysonarts/prd-state`; Manual: self-update against a newer release replaces the binary
+- [x] ISC-REL-4: `prd-state self-update` uses the compiled crate version as "current", downloads the latest `aarch64-apple-darwin` GitHub release asset, replaces the running binary, and reports the new version or that it is already current | Verify: Read: updater built with `cargo_crate_version!()` and GitHub backend for `graysonarts/prd-state`; Manual: self-update against a newer release replaces the binary
 
 ### Background notify
 
 - [x] ISC-REL-5: `update_decision(disabled, is_tty, last_check, now)` is a pure function returning check-or-skip, unit-tested for disabled→skip, non-tty→skip, last-check<24h→skip, and enabled+tty+stale→check | Verify: Test: the four decision cases
 - [ ] ISC-REL-6: the check runs only after a command and never for `self-update`; any failure in the check (no HOME, cache error, network/API error) leaves the command's exit status unchanged | Verify: Read: `main` invokes the check at the end for every command except `SelfUpdate`, and the check returns without surfacing errors
-- [ ] ISC-REL-7: when a newer version exists, the notice is a single line written to stderr that names the new version and the `self-update` command | Verify: Read: the notice uses `eprintln!` and includes the version and `self-update`
+- [x] ISC-REL-7: when a newer version exists, the notice is a single line written to stderr that names the new version and the `self-update` command | Verify: Read: the notice uses `eprintln!` and includes the version and `self-update`
 
 ### Docs
 
@@ -167,3 +167,4 @@ stdout.
 
 ## LOG
 - **1** · 2026-07-04 · `d598271` · SG-DECISION — src/update.rs carries a module-level #[allow(dead_code)] (transient TDD window). SG-UPDATE-IO MUST delete it when the check wrapper calls update_decision, else it silently hides real dead code. update_decision uses Unix-epoch-second u64s — the I/O shell must convert SystemTime->u64 at the boundary. → ISC-REL-5 satisfied; RED 3->GREEN 5, cargo test ok, clippy clean
+- **2** · 2026-07-04 · `3fec71c` · SG-UPDATE-IO — SG-WIRE must (1) add Cmd::SelfUpdate -> update::self_update(), (2) call update::check() at the end of main for every command EXCEPT SelfUpdate, and (3) DELETE the module-level #[allow(dead_code)] at src/update.rs:5 — once main calls self_update()/check(), the whole module is reachable and the allow would hide real dead code. check() returns () and swallows all errors, so calling it cannot change exit status (ISC-REL-6). → ISC-REL-4, ISC-REL-7 satisfied; no TDD (external I/O, no test file); cargo build+clippy(all-targets)+test 75 green
