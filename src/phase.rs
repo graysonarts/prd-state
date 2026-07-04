@@ -1,21 +1,23 @@
 //! Set the current phase; entering OBSERVE captures `start_commit` from git HEAD.
 
-use crate::state::{self, Phase};
+use crate::state::{Phase, State};
+#[cfg(test)]
+use crate::state; // test module reaches state::load/save through this alias
 use anyhow::Result;
 use std::path::Path;
 use std::process::Command;
 
 pub fn set_phase(dir: &Path, phase: Phase) -> Result<String> {
-    let mut st = state::load(dir)?;
-    st.current_phase = Some(phase);
-    if phase == Phase::Observe {
-        st.start_commit = git_short_head(dir);
-    }
-    state::save(dir, &st)?;
-    Ok(match (&phase, &st.start_commit) {
-        (Phase::Observe, Some(c)) => format!("phase: {phase} (start_commit: {c})"),
-        (Phase::Observe, None) => format!("phase: {phase} (start_commit: none — no git HEAD)"),
-        _ => format!("phase: {phase}"),
+    State::update(dir, |st| {
+        st.current_phase = Some(phase);
+        if phase == Phase::Observe {
+            st.start_commit = git_short_head(dir);
+        }
+        Ok(match (&phase, &st.start_commit) {
+            (Phase::Observe, Some(c)) => format!("phase: {phase} (start_commit: {c})"),
+            (Phase::Observe, None) => format!("phase: {phase} (start_commit: none — no git HEAD)"),
+            _ => format!("phase: {phase}"),
+        })
     })
 }
 

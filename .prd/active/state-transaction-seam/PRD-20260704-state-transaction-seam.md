@@ -1,10 +1,10 @@
 ---
 title: State transaction seam + sealed iteration reset
-status: ACTIVE
+status: COMPLETE
 created: 2026-07-04
 updated: 2026-07-04
 labels: [ready-for-agent]
-verification_summary: "Iteration 2: 1/1 PASS (ISC-TX-7)"
+verification_summary: "Iteration 3: 2/2 PASS (ISC-TX-2, ISC-TX-3)"
 failing_criteria: none
 last_phase: UPDATE
 ---
@@ -218,8 +218,8 @@ Nothing else about the commands' observable behavior changes.
 ### Transaction seam
 
 - [x] ISC-TX-1: `State::update(dir, f)` loads `state.json`, runs the closure, and saves only when the closure returns `Ok`; a closure that returns `Err` leaves `state.json` unchanged | Verify: Test: update persists a mutation on Ok; update leaves the file unchanged on Err
-- [ ] ISC-TX-2: all nine mutating commands (`sync`, `phase`, `req add`/`remove`, `verify`, `decide`, `subgoal add`/`remove`, `end-iteration`) perform their `state.json` read-modify-write through `State::update`, and no command calls `state::save` directly for a mutation | Verify: Grep: `state::save` appears only inside `State::update` and `init`; Read: each command wraps its mutation in `State::update`
-- [ ] ISC-TX-3: `State::update` returns the message its closure produced, and every command's stdout/stderr and exit behavior is unchanged from before the refactor | Verify: Test: the nine command test modules pass unedited
+- [x] ISC-TX-2: all nine mutating commands (`sync`, `phase`, `req add`/`remove`, `verify`, `decide`, `subgoal add`/`remove`, `end-iteration`) perform their `state.json` read-modify-write through `State::update`, and no command calls `state::save` directly for a mutation | Verify: Grep: `state::save` appears only inside `State::update` and `init`; Read: each command wraps its mutation in `State::update`
+- [x] ISC-TX-3: `State::update` returns the message its closure produced, and every command's stdout/stderr and exit behavior is unchanged from before the refactor | Verify: Test: the nine command test modules pass unedited
 
 ### Sealed reset
 
@@ -265,3 +265,4 @@ Nothing else about the commands' observable behavior changes.
 ## LOG
 - **1** · 2026-07-04 · `8313993` · SG-1 — Migrating a command to State::update removes its last non-test state:: use, so the test-only `state` alias then trips clippy unused_import — gate it with #[cfg(test)] use crate::state;. Every SG-2/SG-3 command migration will hit this. → ISC-TX-1, ISC-TX-4, ISC-TX-5, ISC-TX-6 satisfied; RED 3->GREEN 78, cargo test + clippy (bin & all-targets) clean
 - **2** · 2026-07-04 · `e6cf8ea` · SG-2 — sync needs a read-only pre-load for prd_path (it lives in state, and run's signature is frozen by the unedited-tests rule), so ISC-TX-7's literal 'before any state.json load' cannot hold for the PRD read -- built to the operative Verify clause (parse+dedup before update, closure only upserts) instead. Remaining SG-3 commands (phase/req/decide/subgoal) mutate only with no external-file locate, so they migrate clean with no pre-load. → ISC-TX-7 satisfied; regression net green unedited: baseline 78 -> post 78; clippy bin + all-targets clean
+- **3** · 2026-07-04 · `7c6a197` · SG-3 — ISC-TX-2's 'no command calls state::save directly' is enforced by convention + a whole-crate grep, not by the type system: state::save stays pub (init needs it), so a future command #10 could bypass State::update and still compile. The grep in this iteration's evidence is the only guard -- re-run it when adding any mutating command. → ISC-TX-2, ISC-TX-3 satisfied; whole-src state::save grep: only state.rs seam+init; 78 tests green unedited; clippy bin+all-targets clean
