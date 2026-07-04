@@ -1,9 +1,12 @@
 //! Subgoal list edits. Split/merge composes from add + remove.
 
-use crate::state::{self, Subgoal, SubgoalStatus, Tier};
+use crate::state::{State, Subgoal, SubgoalStatus, Tier};
+#[cfg(test)]
+use crate::state; // test module reaches state::load/save through this alias
 use anyhow::{bail, Result};
 use std::path::Path;
 
+// The six fields map 1:1 onto Subgoal; a params struct would only move the list.
 #[allow(clippy::too_many_arguments)]
 pub fn add(
     dir: &Path,
@@ -13,34 +16,34 @@ pub fn add(
     milestones: Vec<String>,
     description: &str,
 ) -> Result<String> {
-    let mut st = state::load(dir)?;
-    if st.subgoals.iter().any(|sg| sg.id == id) {
-        bail!("subgoal {id} already exists");
-    }
     if artifacts.is_empty() {
         bail!("subgoal {id} needs at least one artifact");
     }
-    st.subgoals.push(Subgoal {
-        id: id.to_string(),
-        artifacts,
-        tier,
-        description: description.to_string(),
-        milestones,
-        status: SubgoalStatus::Pending,
-    });
-    state::save(dir, &st)?;
-    Ok(format!("added {id} (pending)"))
+    State::update(dir, |st| {
+        if st.subgoals.iter().any(|sg| sg.id == id) {
+            bail!("subgoal {id} already exists");
+        }
+        st.subgoals.push(Subgoal {
+            id: id.to_string(),
+            artifacts,
+            tier,
+            description: description.to_string(),
+            milestones,
+            status: SubgoalStatus::Pending,
+        });
+        Ok(format!("added {id} (pending)"))
+    })
 }
 
 pub fn remove(dir: &Path, id: &str) -> Result<String> {
-    let mut st = state::load(dir)?;
-    let before = st.subgoals.len();
-    st.subgoals.retain(|sg| sg.id != id);
-    if st.subgoals.len() == before {
-        bail!("subgoal {id} not found");
-    }
-    state::save(dir, &st)?;
-    Ok(format!("removed {id}"))
+    State::update(dir, |st| {
+        let before = st.subgoals.len();
+        st.subgoals.retain(|sg| sg.id != id);
+        if st.subgoals.len() == before {
+            bail!("subgoal {id} not found");
+        }
+        Ok(format!("removed {id}"))
+    })
 }
 
 #[cfg(test)]

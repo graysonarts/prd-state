@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
+self_update = { version = "0.44.0", features = ["archive-tar", "compression-flate2"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

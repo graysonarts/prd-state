@@ -7,6 +7,7 @@ mod state;
 mod status;
 mod subgoal;
 mod sync;
+mod update;
 mod verify;
 
 use anyhow::Result;
@@ -78,6 +79,8 @@ enum Cmd {
         #[command(subcommand)]
         cmd: SubgoalCmd,
     },
+    /// Replace this binary with the latest GitHub release
+    SelfUpdate,
 }
 
 #[derive(Subcommand)]
@@ -126,6 +129,7 @@ fn artifact_root(dir: &Path) -> PathBuf {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    let is_self_update = matches!(cli.cmd, Cmd::SelfUpdate);
     match cli.cmd {
         Cmd::Init { prd_path } => {
             let created = state::init(&cli.dir.join(prd_path))?;
@@ -172,6 +176,12 @@ fn main() -> Result<()> {
                 println!("{}", status::render(&summary));
             }
         }
+        Cmd::SelfUpdate => {
+            println!("{}", update::self_update()?);
+        }
+    }
+    if !is_self_update {
+        update::check();
     }
     Ok(())
 }

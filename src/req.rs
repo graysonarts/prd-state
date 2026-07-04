@@ -1,25 +1,26 @@
 //! Manual requirement-registry edits — the fallback when `sync` cannot parse.
 
-use crate::state::{self, ReqType};
+use crate::state::{ReqType, State};
+#[cfg(test)]
+use crate::state; // test module reaches state::load/save through this alias
 use anyhow::Result;
 use std::path::Path;
 
 pub fn add(dir: &Path, id: &str, req_type: ReqType, text: &str) -> Result<String> {
-    let mut st = state::load(dir)?;
-    st.requirements.add(id, req_type, text)?;
-    state::save(dir, &st)?;
-    Ok(format!("added {id} ({req_type:?})"))
+    State::update(dir, |st| {
+        st.requirements.add(id, req_type, text)?;
+        Ok(format!("added {id} ({req_type:?})"))
+    })
 }
 
 pub fn remove(dir: &Path, id: &str) -> Result<String> {
-    let mut st = state::load(dir)?;
-    let msg = match st.requirements.remove(id)? {
-        // Milestones stay in the registry as history; the PRD may still list them.
-        ReqType::Milestone => format!("marked {id} removed"),
-        ReqType::Invariant => format!("deleted invariant {id}"),
-    };
-    state::save(dir, &st)?;
-    Ok(msg)
+    State::update(dir, |st| {
+        match st.requirements.remove(id)? {
+            // Milestones stay in the registry as history; the PRD may still list them.
+            ReqType::Milestone => Ok(format!("marked {id} removed")),
+            ReqType::Invariant => Ok(format!("deleted invariant {id}")),
+        }
+    })
 }
 
 #[cfg(test)]

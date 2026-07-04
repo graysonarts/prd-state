@@ -1,6 +1,8 @@
 //! VERIFY: record per-requirement evidence as it is produced.
 
-use crate::state::{self, VerifyResult, VerifyStatus};
+use crate::state::{State, VerifyResult, VerifyStatus};
+#[cfg(test)]
+use crate::state; // test module reaches state::load/save through this alias
 use anyhow::{bail, Result};
 use std::path::Path;
 
@@ -9,15 +11,15 @@ pub fn run(dir: &Path, id: &str, status: VerifyStatus, evidence: &str) -> Result
     if evidence.trim().is_empty() {
         bail!("evidence required: cite the line, test, or search that proves {id}");
     }
-    let mut st = state::load(dir)?;
-    st.verify_results.push(VerifyResult {
-        id: id.to_string(),
-        status,
-        evidence: evidence.to_string(),
-    });
-    let n = st.verify_results.len();
-    state::save(dir, &st)?;
-    Ok(format!("{id}: {status:?} recorded ({n} result{})", if n == 1 { "" } else { "s" }))
+    State::update(dir, |st| {
+        st.verify_results.push(VerifyResult {
+            id: id.to_string(),
+            status,
+            evidence: evidence.to_string(),
+        });
+        let n = st.verify_results.len();
+        Ok(format!("{id}: {status:?} recorded ({n} result{})", if n == 1 { "" } else { "s" }))
+    })
 }
 
 #[cfg(test)]
