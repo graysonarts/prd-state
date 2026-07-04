@@ -4,9 +4,9 @@ status: DRAFT
 created: 2026-07-04
 updated: 2026-07-04
 labels: [ready-for-agent]
-verification_summary: "not started"
+verification_summary: "Iteration 1: 1/1 PASS (ISC-REL-5)"
 failing_criteria: none
-last_phase: none
+last_phase: UPDATE
 ---
 
 # PRD: macOS release build + self-update
@@ -127,7 +127,7 @@ stdout.
 
 ### Background notify
 
-- [ ] ISC-REL-5: `update_decision(disabled, is_tty, last_check, now)` is a pure function returning check-or-skip, unit-tested for disabled→skip, non-tty→skip, last-check<24h→skip, and enabled+tty+stale→check | Verify: Test: the four decision cases
+- [x] ISC-REL-5: `update_decision(disabled, is_tty, last_check, now)` is a pure function returning check-or-skip, unit-tested for disabled→skip, non-tty→skip, last-check<24h→skip, and enabled+tty+stale→check | Verify: Test: the four decision cases
 - [ ] ISC-REL-6: the check runs only after a command and never for `self-update`; any failure in the check (no HOME, cache error, network/API error) leaves the command's exit status unchanged | Verify: Read: `main` invokes the check at the end for every command except `SelfUpdate`, and the check returns without surfacing errors
 - [ ] ISC-REL-7: when a newer version exists, the notice is a single line written to stderr that names the new version and the `self-update` command | Verify: Read: the notice uses `eprintln!` and includes the version and `self-update`
 
@@ -166,3 +166,4 @@ stdout.
   action pending user approval.
 
 ## LOG
+- **1** · 2026-07-04 · `d598271` · SG-DECISION — src/update.rs carries a module-level #[allow(dead_code)] (transient TDD window). SG-UPDATE-IO MUST delete it when the check wrapper calls update_decision, else it silently hides real dead code. update_decision uses Unix-epoch-second u64s — the I/O shell must convert SystemTime->u64 at the boundary. → ISC-REL-5 satisfied; RED 3->GREEN 5, cargo test ok, clippy clean

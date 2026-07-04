@@ -7,6 +7,7 @@ mod state;
 mod status;
 mod subgoal;
 mod sync;
+mod update;
 mod verify;
 
 use anyhow::Result;
