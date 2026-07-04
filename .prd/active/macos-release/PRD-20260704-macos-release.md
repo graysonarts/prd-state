@@ -4,7 +4,7 @@ status: DRAFT
 created: 2026-07-04
 updated: 2026-07-04
 labels: [ready-for-agent]
-verification_summary: "Iteration 3: 1/1 PASS (ISC-REL-6)"
+verification_summary: "Iteration 4: 3/3 PASS (ISC-REL-1, ISC-REL-2, ISC-REL-3)"
 failing_criteria: none
 last_phase: UPDATE
 ---
@@ -117,9 +117,9 @@ stdout.
 
 ### Release CI
 
-- [ ] ISC-REL-1: `.github/workflows/release.yml` triggers on `v*.*.*` tag pushes, runs on a macOS Apple-Silicon runner, and creates a GitHub Release for the tag | Verify: Read: workflow `on.push.tags` is `v*.*.*`, runner is `macos-14`, a step runs `gh release create`
-- [ ] ISC-REL-2: the release uploads `prd-state-aarch64-apple-darwin.tar.gz` (the release binary) and a matching `.sha256` checksum sidecar as assets | Verify: Read: workflow tars `target/release/prd-state`, writes a sha256 file, and passes both to `gh release create`
-- [ ] ISC-REL-3: the workflow fails, before building, when the pushed tag (v stripped) does not equal the `Cargo.toml` version | Verify: Read: a guard step compares tag to Cargo version and exits non-zero on mismatch
+- [x] ISC-REL-1: `.github/workflows/release.yml` triggers on `v*.*.*` tag pushes, runs on a macOS Apple-Silicon runner, and creates a GitHub Release for the tag | Verify: Read: workflow `on.push.tags` is `v*.*.*`, runner is `macos-14`, a step runs `gh release create`
+- [x] ISC-REL-2: the release uploads `prd-state-aarch64-apple-darwin.tar.gz` (the release binary) and a matching `.sha256` checksum sidecar as assets | Verify: Read: workflow tars `target/release/prd-state`, writes a sha256 file, and passes both to `gh release create`
+- [x] ISC-REL-3: the workflow fails, before building, when the pushed tag (v stripped) does not equal the `Cargo.toml` version | Verify: Read: a guard step compares tag to Cargo version and exits non-zero on mismatch
 
 ### Self-update
 
@@ -169,3 +169,4 @@ stdout.
 - **1** · 2026-07-04 · `d598271` · SG-DECISION — src/update.rs carries a module-level #[allow(dead_code)] (transient TDD window). SG-UPDATE-IO MUST delete it when the check wrapper calls update_decision, else it silently hides real dead code. update_decision uses Unix-epoch-second u64s — the I/O shell must convert SystemTime->u64 at the boundary. → ISC-REL-5 satisfied; RED 3->GREEN 5, cargo test ok, clippy clean
 - **2** · 2026-07-04 · `3fec71c` · SG-UPDATE-IO — SG-WIRE must (1) add Cmd::SelfUpdate -> update::self_update(), (2) call update::check() at the end of main for every command EXCEPT SelfUpdate, and (3) DELETE the module-level #[allow(dead_code)] at src/update.rs:5 — once main calls self_update()/check(), the whole module is reachable and the allow would hide real dead code. check() returns () and swallows all errors, so calling it cannot change exit status (ISC-REL-6). → ISC-REL-4, ISC-REL-7 satisfied; no TDD (external I/O, no test file); cargo build+clippy(all-targets)+test 75 green
 - **3** · 2026-07-04 · `39df12b` · SG-WIRE — Self-update + notify fully wired; whole update module reachable (allow removed, 0 dead_code). Remaining is non-code: SG-CI (release.yml) + SG-DOCS (ADR 0002 + quarantine note). ISC-REL-4 binary-replace half and a live notify still need a first pushed tag to exercise. Process note: run 'decide' before ACT — skipping it leaves no current_action and end-iteration bails. → ISC-REL-6 satisfied; no TDD (main glue, no test file); cargo clippy+test 75 green; piped 'status' 0.034s non-tty no-op confirms ISC-REL-6
+- **4** · 2026-07-04 · `1c1ed95` · SG-CI — release.yml uses bare 'on:' — strict YAML 1.1 parsers (ruby psych, some linters) coerce it to boolean true, but GitHub Actions reads it correctly; do not 'fix' by quoting unless a linter demands it. Only SG-DOCS remains. The full release/self-update path (ISC-REL-4 binary-replace + live notify) is exercised only by a first real 'git push --tags', which also seeds the baseline release. → ISC-REL-1, ISC-REL-2, ISC-REL-3 satisfied; no TDD (YAML config); ruby psych parse OK; version-guard snippet executed: 0.3.0 match->build, mismatch->exit 1
