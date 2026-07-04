@@ -1,10 +1,10 @@
 ---
 title: macOS release build + self-update
-status: DRAFT
+status: COMPLETE
 created: 2026-07-04
 updated: 2026-07-04
 labels: [ready-for-agent]
-verification_summary: "Iteration 4: 3/3 PASS (ISC-REL-1, ISC-REL-2, ISC-REL-3)"
+verification_summary: "Iteration 5: 2/2 PASS (ISC-REL-8, ISC-REL-9)"
 failing_criteria: none
 last_phase: UPDATE
 ---
@@ -133,8 +133,8 @@ stdout.
 
 ### Docs
 
-- [ ] ISC-REL-8: an ADR under `docs/adr/` records the distribution choices — self_update + GitHub Releases, Apple-Silicon-only, notify-interactive-only, and unsigned/no-notarization — with their trade-offs | Verify: Read: ADR 0002 states these decisions and why
-- [ ] ISC-REL-9: user-facing docs note the one-time first-download Gatekeeper quarantine fix | Verify: Grep: README or CONTEXT.md contains `xattr -d com.apple.quarantine`
+- [x] ISC-REL-8: an ADR under `docs/adr/` records the distribution choices — self_update + GitHub Releases, Apple-Silicon-only, notify-interactive-only, and unsigned/no-notarization — with their trade-offs | Verify: Read: ADR 0002 states these decisions and why
+- [x] ISC-REL-9: user-facing docs note the one-time first-download Gatekeeper quarantine fix | Verify: Grep: README or CONTEXT.md contains `xattr -d com.apple.quarantine`
 
 ## Out of Scope
 
@@ -170,3 +170,4 @@ stdout.
 - **2** · 2026-07-04 · `3fec71c` · SG-UPDATE-IO — SG-WIRE must (1) add Cmd::SelfUpdate -> update::self_update(), (2) call update::check() at the end of main for every command EXCEPT SelfUpdate, and (3) DELETE the module-level #[allow(dead_code)] at src/update.rs:5 — once main calls self_update()/check(), the whole module is reachable and the allow would hide real dead code. check() returns () and swallows all errors, so calling it cannot change exit status (ISC-REL-6). → ISC-REL-4, ISC-REL-7 satisfied; no TDD (external I/O, no test file); cargo build+clippy(all-targets)+test 75 green
 - **3** · 2026-07-04 · `39df12b` · SG-WIRE — Self-update + notify fully wired; whole update module reachable (allow removed, 0 dead_code). Remaining is non-code: SG-CI (release.yml) + SG-DOCS (ADR 0002 + quarantine note). ISC-REL-4 binary-replace half and a live notify still need a first pushed tag to exercise. Process note: run 'decide' before ACT — skipping it leaves no current_action and end-iteration bails. → ISC-REL-6 satisfied; no TDD (main glue, no test file); cargo clippy+test 75 green; piped 'status' 0.034s non-tty no-op confirms ISC-REL-6
 - **4** · 2026-07-04 · `1c1ed95` · SG-CI — release.yml uses bare 'on:' — strict YAML 1.1 parsers (ruby psych, some linters) coerce it to boolean true, but GitHub Actions reads it correctly; do not 'fix' by quoting unless a linter demands it. Only SG-DOCS remains. The full release/self-update path (ISC-REL-4 binary-replace + live notify) is exercised only by a first real 'git push --tags', which also seeds the baseline release. → ISC-REL-1, ISC-REL-2, ISC-REL-3 satisfied; no TDD (YAML config); ruby psych parse OK; version-guard snippet executed: 0.3.0 match->build, mismatch->exit 1
+- **5** · 2026-07-04 · `9fe9971` · SG-DOCS — PRD reaches COMPLETE, but ISC-REL-4 binary-replace + live notify are exercised only by a first real 'git push --tags' (which also seeds the baseline release self-update compares against). User-facing docs live in a new README (CONTEXT.md is a dev glossary, not install docs); self-update binaries carry no quarantine xattr so the fix is first-download-only. → ISC-REL-8, ISC-REL-9 satisfied; no TDD (docs); git status 0 .rs, grep README.md:17 xattr fix, ADR 4 decisions
