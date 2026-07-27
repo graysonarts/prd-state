@@ -6,9 +6,15 @@ use crate::state; // test module reaches state::load/save through this alias
 use anyhow::Result;
 use std::path::Path;
 
-pub fn add(dir: &Path, id: &str, req_type: ReqType, text: &str) -> Result<String> {
+pub fn add(
+    dir: &Path,
+    id: &str,
+    req_type: ReqType,
+    text: &str,
+    annotation: Option<&str>,
+) -> Result<String> {
     State::update(dir, |st| {
-        st.requirements.add(id, req_type, text)?;
+        st.requirements.add(id, req_type, text, annotation)?;
         Ok(format!("added {id} ({req_type:?})"))
     })
 }
@@ -38,7 +44,7 @@ mod tests {
     #[test]
     fn add_milestone_is_active() {
         let dir = dir_with_state();
-        add(dir.path(), "ISC-X1", ReqType::Milestone, "does a thing").unwrap();
+        add(dir.path(), "ISC-X1", ReqType::Milestone, "does a thing", None).unwrap();
         let st = state::load(dir.path()).unwrap();
         assert_eq!(st.requirements[0].id, "ISC-X1");
         assert_eq!(st.requirements[0].status, Some(ReqStatus::Active));
@@ -46,9 +52,19 @@ mod tests {
     }
 
     #[test]
+    fn add_stores_annotation_and_defaults_to_absent() {
+        let dir = dir_with_state();
+        add(dir.path(), "INV-A1", ReqType::Invariant, "always", Some("blocking")).unwrap();
+        add(dir.path(), "ISC-X1", ReqType::Milestone, "a thing", None).unwrap();
+        let st = state::load(dir.path()).unwrap();
+        assert_eq!(st.requirements[0].annotation.as_deref(), Some("blocking"));
+        assert_eq!(st.requirements[1].annotation, None);
+    }
+
+    #[test]
     fn add_invariant_has_no_status() {
         let dir = dir_with_state();
-        add(dir.path(), "INV-A1", ReqType::Invariant, "always").unwrap();
+        add(dir.path(), "INV-A1", ReqType::Invariant, "always", None).unwrap();
         let st = state::load(dir.path()).unwrap();
         assert_eq!(st.requirements[0].status, None);
     }
@@ -56,15 +72,15 @@ mod tests {
     #[test]
     fn add_duplicate_rejected() {
         let dir = dir_with_state();
-        add(dir.path(), "ISC-X1", ReqType::Milestone, "a").unwrap();
-        let err = add(dir.path(), "ISC-X1", ReqType::Milestone, "b").unwrap_err();
+        add(dir.path(), "ISC-X1", ReqType::Milestone, "a", None).unwrap();
+        let err = add(dir.path(), "ISC-X1", ReqType::Milestone, "b", None).unwrap_err();
         assert!(err.to_string().contains("already registered"));
     }
 
     #[test]
     fn remove_milestone_marks_removed_keeps_entry() {
         let dir = dir_with_state();
-        add(dir.path(), "ISC-X1", ReqType::Milestone, "a").unwrap();
+        add(dir.path(), "ISC-X1", ReqType::Milestone, "a", None).unwrap();
         let msg = remove(dir.path(), "ISC-X1").unwrap();
         assert!(msg.contains("marked ISC-X1 removed"));
         let st = state::load(dir.path()).unwrap();
@@ -75,7 +91,7 @@ mod tests {
     #[test]
     fn remove_invariant_deletes_entry() {
         let dir = dir_with_state();
-        add(dir.path(), "INV-A1", ReqType::Invariant, "a").unwrap();
+        add(dir.path(), "INV-A1", ReqType::Invariant, "a", None).unwrap();
         remove(dir.path(), "INV-A1").unwrap();
         assert!(state::load(dir.path()).unwrap().requirements.is_empty());
     }

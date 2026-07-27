@@ -104,9 +104,9 @@ mod tests {
             milestones: vec!["ISC-B1".into()],
             status: SubgoalStatus::Pending,
         });
-        s.requirements.add("ISC-A1", ReqType::Milestone, "done").unwrap();
+        s.requirements.add("ISC-A1", ReqType::Milestone, "done", None).unwrap();
         s.requirements.mark_satisfied("ISC-A1").unwrap();
-        s.requirements.add("ISC-B1", ReqType::Milestone, "todo").unwrap();
+        s.requirements.add("ISC-B1", ReqType::Milestone, "todo", None).unwrap();
         s
     }
 

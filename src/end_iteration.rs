@@ -231,8 +231,8 @@ mod tests {
         st.iteration = 4;
         st.current_phase = Some(Phase::Verify);
         st.start_commit = Some("abc1234".into());
-        st.requirements.add("ISC-X1", ReqType::Milestone, "text for ISC-X1").unwrap();
-        st.requirements.add("ISC-X2", ReqType::Milestone, "text for ISC-X2").unwrap();
+        st.requirements.add("ISC-X1", ReqType::Milestone, "text for ISC-X1", None).unwrap();
+        st.requirements.add("ISC-X2", ReqType::Milestone, "text for ISC-X2", None).unwrap();
         st.subgoals.push(Subgoal {
             id: "SG-1".into(),
             artifacts: vec!["src/x.rs".into()],
@@ -453,7 +453,7 @@ mod tests {
     fn not_complete_while_other_milestones_active() {
         let mut st = mid_iteration_state();
         // outside this subgoal
-        st.requirements.add("ISC-Y1", ReqType::Milestone, "text for ISC-Y1").unwrap();
+        st.requirements.add("ISC-Y1", ReqType::Milestone, "text for ISC-Y1", None).unwrap();
         st.verify_results = vec![
             result("ISC-X1", VerifyStatus::Pass),
             result("ISC-X2", VerifyStatus::Pass),

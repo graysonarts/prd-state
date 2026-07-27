@@ -109,6 +109,9 @@ enum ReqCmd {
         #[arg(ignore_case = true)]
         req_type: state::ReqType,
         text: String,
+        /// Inert author metadata; carries a PRD line's `(…)` through the fallback
+        #[arg(long)]
+        annotation: Option<String>,
     },
     /// Mark a milestone removed (invariants are deleted outright)
     Remove { id: String },
@@ -139,8 +142,11 @@ fn main() -> Result<()> {
             println!("{}", phase::set_phase(&cli.dir, phase)?);
         }
         Cmd::Req { cmd } => match cmd {
-            ReqCmd::Add { id, req_type, text } => {
-                println!("{}", req::add(&cli.dir, &id, req_type, &text)?);
+            ReqCmd::Add { id, req_type, text, annotation } => {
+                println!(
+                    "{}",
+                    req::add(&cli.dir, &id, req_type, &text, annotation.as_deref())?
+                );
             }
             ReqCmd::Remove { id } => {
                 println!("{}", req::remove(&cli.dir, &id)?);

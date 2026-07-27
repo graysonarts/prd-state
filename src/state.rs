@@ -136,17 +136,21 @@ pub struct Requirement {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub status: Option<ReqStatus>,
     pub text: String,
+    /// Inert author metadata off the PRD line. Never branched on; not identity.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub annotation: Option<String>,
 }
 
 impl Requirement {
     /// Milestones start active; invariants carry no status. The one place the
     /// status-init rule lives, so `add` and `upsert` cannot drift.
-    fn new(id: &str, req_type: ReqType, text: &str) -> Self {
+    fn new(id: &str, req_type: ReqType, text: &str, annotation: Option<&str>) -> Self {
         Requirement {
             id: id.to_string(),
             req_type,
             status: matches!(req_type, ReqType::Milestone).then_some(ReqStatus::Active),
             text: text.to_string(),
+            annotation: annotation.map(ToString::to_string),
         }
     }
 }
@@ -186,11 +190,17 @@ impl std::ops::Deref for Registry {
 
 impl Registry {
     /// Register a requirement: Milestones start active, Invariants carry no status.
-    pub fn add(&mut self, id: &str, req_type: ReqType, text: &str) -> Result<()> {
+    pub fn add(
+        &mut self,
+        id: &str,
+        req_type: ReqType,
+        text: &str,
+        annotation: Option<&str>,
+    ) -> Result<()> {
         if self.find(id).is_some() {
             bail!("requirement {id} already registered");
         }
-        self.0.push(Requirement::new(id, req_type, text));
+        self.0.push(Requirement::new(id, req_type, text, annotation));
         Ok(())
     }
 
@@ -245,7 +255,12 @@ impl Registry {
         for p in parsed {
             match self.0.iter_mut().find(|r| r.id == p.id) {
                 None => {
-                    self.0.push(Requirement::new(&p.id, p.req_type, &p.text));
+                    self.0.push(Requirement::new(
+                        &p.id,
+                        p.req_type,
+                        &p.text,
+                        p.annotation.as_deref(),
+                    ));
                     match p.req_type {
                         ReqType::Invariant => report.added_invariants += 1,
                         ReqType::Milestone => report.added_milestones += 1,
@@ -253,6 +268,7 @@ impl Registry {
                 }
                 Some(existing) => {
                     existing.text.clone_from(&p.text);
+                    existing.annotation.clone_from(&p.annotation); // source authoritative, clears too
                     if existing.status == Some(ReqStatus::Removed) {
                         existing.status = Some(ReqStatus::Active); // reappeared in PRD
                         report.added_milestones += 1;
@@ -456,7 +472,7 @@ mod tests {
         let mut state = State::new("p.md");
         state.iteration = 7;
         state.current_phase = Some(Phase::Verify);
-        state.requirements.add("ISC-X1", ReqType::Milestone, "does the thing").unwrap();
+        state.requirements.add("ISC-X1", ReqType::Milestone, "does the thing", None).unwrap();
         save(dir.path(), &state).unwrap();
         assert!(!dir.path().join("state.json.tmp").exists());
         let loaded = load(dir.path()).unwrap();
@@ -469,7 +485,7 @@ mod tests {
     #[test]
     fn invariants_serialize_without_status_key() {
         let mut state = State::new("p.md");
-        state.requirements.add("INV-A1", ReqType::Invariant, "always").unwrap();
+        state.requirements.add("INV-A1", ReqType::Invariant, "always", None).unwrap();
         let json = serde_json::to_string(&state).unwrap();
         assert!(!json.contains("\"status\":null"));
     }
@@ -565,7 +581,7 @@ mod tests {
             milestones: vec![],
             status: SubgoalStatus::Pending,
         });
-        st.requirements.add("ISC-A", ReqType::Milestone, "a").unwrap();
+        st.requirements.add("ISC-A", ReqType::Milestone, "a", None).unwrap();
 
         st.begin_next_iteration();
 
@@ -586,7 +602,7 @@ mod tests {
     #[test]
     fn mark_satisfied_rejects_invariants() {
         let mut reg = Registry::default();
-        reg.add("INV-A1", ReqType::Invariant, "always").unwrap();
+        reg.add("INV-A1", ReqType::Invariant, "always", None).unwrap();
         let err = reg.mark_satisfied("INV-A1").unwrap_err();
         assert!(err.to_string().contains("only milestones"));
     }
@@ -594,11 +610,11 @@ mod tests {
     #[test]
     fn upsert_registers_invariants_deduplicating() {
         let mut reg = Registry::default();
-        reg.add("INV-A1", ReqType::Invariant, "old wording").unwrap();
+        reg.add("INV-A1", ReqType::Invariant, "old wording", None).unwrap();
         let parsed = vec![
-            ParsedReq { id: "INV-A1".into(), req_type: ReqType::Invariant, text: "new wording".into() },
-            ParsedReq { id: "INV-A2".into(), req_type: ReqType::Invariant, text: "b".into() },
-            ParsedReq { id: "INV-A3".into(), req_type: ReqType::Invariant, text: "c".into() },
+            ParsedReq { id: "INV-A1".into(), req_type: ReqType::Invariant, text: "new wording".into(), annotation: None },
+            ParsedReq { id: "INV-A2".into(), req_type: ReqType::Invariant, text: "b".into(), annotation: None },
+            ParsedReq { id: "INV-A3".into(), req_type: ReqType::Invariant, text: "c".into(), annotation: None },
         ];
         let report = reg.upsert_from_parsed(&parsed);
         assert_eq!(report.added_invariants, 2);
@@ -610,13 +626,13 @@ mod tests {
     #[test]
     fn upsert_diffs_milestones_preserving_satisfied() {
         let mut reg = Registry::default();
-        reg.add("ISC-A", ReqType::Milestone, "a").unwrap();
+        reg.add("ISC-A", ReqType::Milestone, "a", None).unwrap();
         reg.mark_satisfied("ISC-A").unwrap();
-        reg.add("ISC-B", ReqType::Milestone, "b").unwrap();
+        reg.add("ISC-B", ReqType::Milestone, "b", None).unwrap();
         // PRD now has A and C; B is gone.
         let parsed = vec![
-            ParsedReq { id: "ISC-A".into(), req_type: ReqType::Milestone, text: "a".into() },
-            ParsedReq { id: "ISC-C".into(), req_type: ReqType::Milestone, text: "c".into() },
+            ParsedReq { id: "ISC-A".into(), req_type: ReqType::Milestone, text: "a".into(), annotation: None },
+            ParsedReq { id: "ISC-C".into(), req_type: ReqType::Milestone, text: "c".into(), annotation: None },
         ];
         let report = reg.upsert_from_parsed(&parsed);
         assert_eq!(report.added_milestones, 1);
@@ -629,11 +645,70 @@ mod tests {
     }
 
     #[test]
+    fn annotation_key_absent_when_none_and_optional_on_load() {
+        let dir = TempDir::new().unwrap();
+        let mut state = State::new("p.md");
+        state.requirements.add("ISC-A1", ReqType::Milestone, "a", None).unwrap();
+        let json = serde_json::to_string(&state).unwrap();
+        assert!(!json.contains("annotation"), "json was: {json}");
+
+        // A state.json written before annotations existed still loads.
+        fs::write(
+            dir.path().join("state.json"),
+            r#"{"iteration":0,"current_phase":null,"start_commit":null,"prd_path":"p.md",
+                "current_action":null,"pre_flight_checklist":[],"verify_results":[],
+                "stall_count":0,"subgoals":[],
+                "requirements":[{"id":"ISC-A1","type":"milestone","status":"active","text":"a"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(load(dir.path()).unwrap().requirements[0].annotation, None);
+    }
+
+    #[test]
+    fn annotation_roundtrips_when_present() {
+        let dir = TempDir::new().unwrap();
+        let mut state = State::new("p.md");
+        state.requirements.upsert_from_parsed(&[ParsedReq {
+            id: "INV-A1".into(),
+            req_type: ReqType::Invariant,
+            text: "always".into(),
+            annotation: Some("blocking".into()),
+        }]);
+        save(dir.path(), &state).unwrap();
+        let loaded = load(dir.path()).unwrap();
+        assert_eq!(loaded.requirements[0].annotation.as_deref(), Some("blocking"));
+    }
+
+    #[test]
+    fn upsert_overwrites_and_clears_annotation_without_touching_status() {
+        let mut reg = Registry::default();
+        let parsed = |ann: Option<&str>| {
+            vec![ParsedReq {
+                id: "ISC-A".into(),
+                req_type: ReqType::Milestone,
+                text: "a".into(),
+                annotation: ann.map(ToString::to_string),
+            }]
+        };
+        reg.upsert_from_parsed(&parsed(Some("blocking")));
+        assert_eq!(reg[0].annotation.as_deref(), Some("blocking"));
+        reg.mark_satisfied("ISC-A").unwrap();
+
+        reg.upsert_from_parsed(&parsed(Some("deferred")));
+        assert_eq!(reg[0].annotation.as_deref(), Some("deferred"));
+        assert_eq!(reg[0].status, Some(ReqStatus::Satisfied), "annotation edit is not identity");
+
+        reg.upsert_from_parsed(&parsed(None));
+        assert_eq!(reg[0].annotation, None, "source clears it");
+        assert_eq!(reg[0].status, Some(ReqStatus::Satisfied));
+    }
+
+    #[test]
     fn upsert_reactivates_removed_milestone_back_in_prd() {
         let mut reg = Registry::default();
-        reg.add("ISC-A", ReqType::Milestone, "a").unwrap();
+        reg.add("ISC-A", ReqType::Milestone, "a", None).unwrap();
         reg.remove("ISC-A").unwrap();
-        let parsed = vec![ParsedReq { id: "ISC-A".into(), req_type: ReqType::Milestone, text: "a".into() }];
+        let parsed = vec![ParsedReq { id: "ISC-A".into(), req_type: ReqType::Milestone, text: "a".into(), annotation: None }];
         reg.upsert_from_parsed(&parsed);
         assert_eq!(reg[0].status, Some(ReqStatus::Active));
     }

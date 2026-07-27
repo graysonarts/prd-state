@@ -64,11 +64,11 @@ mod tests {
     fn dir_with_subgoal() -> TempDir {
         let dir = TempDir::new().unwrap();
         let mut st = State::new("PRD-test.md");
-        st.requirements.add("INV-A1", ReqType::Invariant, "text for INV-A1").unwrap();
-        st.requirements.add("ISC-X1", ReqType::Milestone, "text for ISC-X1").unwrap();
-        st.requirements.add("ISC-X2", ReqType::Milestone, "text for ISC-X2").unwrap();
+        st.requirements.add("INV-A1", ReqType::Invariant, "text for INV-A1", None).unwrap();
+        st.requirements.add("ISC-X1", ReqType::Milestone, "text for ISC-X1", None).unwrap();
+        st.requirements.add("ISC-X2", ReqType::Milestone, "text for ISC-X2", None).unwrap();
         // registered but not in the subgoal
-        st.requirements.add("ISC-Y1", ReqType::Milestone, "text for ISC-Y1").unwrap();
+        st.requirements.add("ISC-Y1", ReqType::Milestone, "text for ISC-Y1", None).unwrap();
         st.subgoals.push(Subgoal {
             id: "SG-1".into(),
             artifacts: vec!["src/x.rs".into()],
